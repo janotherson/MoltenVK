@@ -30,7 +30,13 @@ class MVKMTLBufferAllocationPool;
 #pragma mark -
 #pragma mark MVKMTLBufferAllocation
 
-/** Defines a contiguous region of bytes within a MTLBuffer. */
+/**
+ * Defines a contiguous region of bytes within a MTLBuffer.
+ *
+ * MVKMTLBufferAllocation is a reusable handle. After return to pool,
+ * it does not preserve backing storage identity. reassignAllocation()
+ * may rebind it to a different MTLBuffer and offset.
+ */
 class MVKMTLBufferAllocation : public MVKBaseObject, public MVKLinkableMixin<MVKMTLBufferAllocation> {
 
 public:
@@ -130,6 +136,7 @@ protected:
     struct MTLBufferTracker { id<MTLBuffer> mtlBuffer; uint64_t allocationCount; };
     MVKSmallVector<MTLBufferTracker, 64> _mtlBuffers;
     bool _isThreadSafe;
+    uint64_t _currentBufferIndex;
 };
 
 

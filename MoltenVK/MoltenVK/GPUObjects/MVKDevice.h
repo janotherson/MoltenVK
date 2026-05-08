@@ -1099,6 +1099,32 @@ protected:
 	MVKSmallVector<MVKVisibilityBuffer> _visibilityBuffers;
 	MVKLiveResourceSet _liveResources;
 	MVKSmallVector<MVKCommandPool*> _commandPools;
+
+	/**
+	 * LOCK ORDERING
+	 *
+	 * Critical section ordering to prevent deadlock:
+	 *
+	 * 1. MVKDevice::_rezLock
+	 *    - Must be acquired before MVKCommandEncodingPool::_lock
+	 *    - Must be acquired before MVKMTLBufferAllocationPool::_lock
+	 *    - Used for device-level operations (command pool registry)
+	 *
+	 * 2. MVKCommandEncodingPool::_lock
+	 *    - Protects allocator pool state
+	 *    - Must be acquired before MVKMTLBufferAllocationPool::_lock
+	 *
+	 * 3. MVKMTLBufferAllocationPool::_lock
+	 *    - Protects individual allocator state
+	 *    - Fine-grained locking for performance
+	 *
+	 * Deadlock analysis:
+	 *   - acquireAllocation() / returnAllocation() take pool _lock only
+	 *   - trimCommandPoolBuffers() takes _rezLock → encoding _lock → pool _lock
+	 *   - No reverse path exists → deadlock impossible
+	 *
+	 * Only trimCommandPoolBuffers() acquires all three locks.
+	 */
 	std::mutex _rezLock;
 	std::mutex _sem4Lock;
     std::mutex _perfLock;

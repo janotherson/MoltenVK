@@ -584,7 +584,7 @@ void MVKQueueCommandBufferSubmission::finish() {
 	uint32_t trimInterval = getMVKConfig().trimCommandPoolInterval;
 	if (trimInterval > 0) {
 		static std::atomic<uint32_t> s_completionCount{0};
-		uint32_t count = s_completionCount.fetch_add(1, std::memory_order_relaxed);
+		uint32_t count = s_completionCount.fetch_add(1, std::memory_order_relaxed) + 1;
 		if (count % trimInterval == 0) {
 			_device->trimCommandPoolBuffers();
 		}

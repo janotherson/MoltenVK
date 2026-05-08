@@ -6,9 +6,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,6 +17,7 @@
  */
 
 #include "MVKMTLBufferAllocation.h"
+#include <limits>
 
 
 #pragma mark -
@@ -35,19 +36,28 @@ MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::newObject() {
     if (_nextOffset >= _mtlBufferLength) { addMTLBuffer(); }
 
     // Extract and return the next allocation from the current buffer,
-    // which is always the last one in the array, and advance the offset
+    // which is always at _currentBufferIndex, and advance the offset
     // of future allocation to beyond this allocation.
     NSUInteger offset = _nextOffset;
     _nextOffset += _allocationLength;
-    return new MVKMTLBufferAllocation(this, _mtlBuffers.back().mtlBuffer, offset, _allocationLength, _mtlBuffers.size() - 1);
+    return new MVKMTLBufferAllocation(this, _mtlBuffers[_currentBufferIndex].mtlBuffer, offset, _allocationLength, _currentBufferIndex);
 }
 
-// Adds a new MTLBuffer to the buffer pool and resets the next offset to the start of it
+// Adds a new MTLBuffer to the buffer pool and resets the next offset to the start of it.
+// Always appends to _mtlBuffers — nil slots from trim are NOT reused here because
+// free-list allocation objects may still reference those slots by _poolIndex.
+// Reusing a nil slot would cause those allocations to silently skip reassignment
+// (the nil check in acquireAllocationUnlocked would pass) and use stale offsets
+// into the new buffer, resulting in corrupted data.
 void MVKMTLBufferAllocationPool::addMTLBuffer() {
-    MTLResourceOptions mbOpts = (_mtlStorageMode << MTLResourceStorageModeShift) | MTLResourceCPUCacheModeDefaultCache;
-    _mtlBuffers.push_back({ [getMTLDevice() newBufferWithLength: _mtlBufferLength options: mbOpts], 0 });
-	getDevice()->makeResident(_mtlBuffers.back().mtlBuffer);
+    MTLResourceOptions mbOpts = (_mtlStorageMode << MTLResourceStorageModeShift)
+                              | MTLResourceCPUCacheModeDefaultCache;
+    id<MTLBuffer> newBuffer = [getMTLDevice() newBufferWithLength: _mtlBufferLength
+                                                          options: mbOpts];
+    _mtlBuffers.push_back({ newBuffer, 0 });
+    getDevice()->makeResident(newBuffer);
     _nextOffset = 0;
+    _currentBufferIndex = _mtlBuffers.size() - 1;
 }
 
 MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::acquireAllocationUnlocked() {
@@ -78,6 +88,8 @@ void MVKMTLBufferAllocationPool::returnAllocationUnlocked(MVKMTLBufferAllocation
     // If backing buffer was already released by trim, just return to free list
     if (ba->_poolIndex < _mtlBuffers.size() &&
         _mtlBuffers[ba->_poolIndex].mtlBuffer == nil) {
+        MVKAssert(_mtlBuffers[ba->_poolIndex].allocationCount == 0,
+                  "Returning allocation whose backing buffer was trimmed while still marked active");
         returnObject(ba);
         return;
     }
@@ -107,6 +119,7 @@ MVKMTLBufferAllocationPool::MVKMTLBufferAllocationPool(MVKDevice* device, NSUInt
     _mtlBufferLength = _allocationLength * (isDedicated ? 1 : calcMTLBufferAllocationCount());
     _mtlStorageMode = mtlStorageMode;
     _nextOffset = _mtlBufferLength;     // Force a MTLBuffer to be added on first access
+    _currentBufferIndex = std::numeric_limits<uint64_t>::max();  // sentinel: no buffer yet
 }
 
 // Returns the number of regions to allocate per MTLBuffer, as determined from the allocation size.
@@ -132,17 +145,21 @@ MVKMTLBufferAllocationPool::~MVKMTLBufferAllocationPool() {
 void MVKMTLBufferAllocationPool::reassignAllocation(MVKMTLBufferAllocation* ba) {
     if (_nextOffset >= _mtlBufferLength) { addMTLBuffer(); }
 
-    uint64_t newIndex = _mtlBuffers.size() - 1;
-    ba->_poolIndex = newIndex;
-    ba->_mtlBuffer = _mtlBuffers[newIndex].mtlBuffer;
+    MVKAssert(_mtlBuffers[_currentBufferIndex].mtlBuffer != nil,
+              "reassignAllocation: target buffer is nil");
+
+    ba->_poolIndex = _currentBufferIndex;
+    ba->_mtlBuffer = _mtlBuffers[_currentBufferIndex].mtlBuffer;
     ba->_offset = _nextOffset;
     _nextOffset += _allocationLength;
+
+    MVKAssert(ba->_mtlBuffer != nil,
+              "reassignAllocation: result mtlBuffer is nil");
 }
 
 void MVKMTLBufferAllocationPool::trimUnlocked() {
     if (_mtlBuffers.empty()) return;
 
-    uint64_t currentIdx = _mtlBuffers.size() - 1;
     bool currentIsPartial = (_nextOffset > 0 && _nextOffset < _mtlBufferLength);
 
     for (uint64_t i = 0; i < _mtlBuffers.size(); i++) {
@@ -150,7 +167,7 @@ void MVKMTLBufferAllocationPool::trimUnlocked() {
 
         if (tracker.mtlBuffer == nil) continue;       // Already released
         if (tracker.allocationCount > 0) continue;     // Still in use
-        if (i == currentIdx && currentIsPartial) continue; // Current working buffer
+        if (i == _currentBufferIndex && currentIsPartial) continue; // Current working buffer
 
         getDevice()->removeResidency(tracker.mtlBuffer);
         [tracker.mtlBuffer release];
