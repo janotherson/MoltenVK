@@ -139,6 +139,9 @@ public:
 	/** Deletes all the internal resources. */
 	void clear();
 
+	/** Trim all buffer allocators, releasing empty MTLBuffers. */
+	void trimBufferAllocators();
+
 #pragma mark Construction
 
 	MVKCommandEncodingPool(MVKCommandPool* commandPool);

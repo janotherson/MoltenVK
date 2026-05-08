@@ -52,6 +52,13 @@ void MVKMTLBufferAllocationPool::addMTLBuffer() {
 
 MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::acquireAllocationUnlocked() {
     MVKMTLBufferAllocation* ba = acquireObject();
+
+    // If backing buffer was released by trim, reassign to a live buffer
+    if (ba->_poolIndex < _mtlBuffers.size() &&
+        _mtlBuffers[ba->_poolIndex].mtlBuffer == nil) {
+        reassignAllocation(ba);
+    }
+
     if (!_mtlBuffers[ba->_poolIndex].allocationCount++) {
         [ba->_mtlBuffer setPurgeableState: MTLPurgeableStateNonVolatile];
     }
@@ -68,6 +75,13 @@ MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::acquireAllocation() {
 }
 
 void MVKMTLBufferAllocationPool::returnAllocationUnlocked(MVKMTLBufferAllocation* ba) {
+    // If backing buffer was already released by trim, just return to free list
+    if (ba->_poolIndex < _mtlBuffers.size() &&
+        _mtlBuffers[ba->_poolIndex].mtlBuffer == nil) {
+        returnObject(ba);
+        return;
+    }
+
     if (!--_mtlBuffers[ba->_poolIndex].allocationCount) {
         [ba->_mtlBuffer setPurgeableState: MTLPurgeableStateVolatile];
     }
@@ -107,10 +121,76 @@ uint32_t MVKMTLBufferAllocationPool::calcMTLBufferAllocationCount() {
 
 MVKMTLBufferAllocationPool::~MVKMTLBufferAllocationPool() {
     for (uint32_t bufferIndex = 0; bufferIndex < _mtlBuffers.size(); ++bufferIndex) {
-		getDevice()->removeResidency(_mtlBuffers[bufferIndex].mtlBuffer);
-        [_mtlBuffers[bufferIndex].mtlBuffer release];
+        if (_mtlBuffers[bufferIndex].mtlBuffer) {
+            getDevice()->removeResidency(_mtlBuffers[bufferIndex].mtlBuffer);
+            [_mtlBuffers[bufferIndex].mtlBuffer release];
+        }
     }
     _mtlBuffers.clear();
+}
+
+void MVKMTLBufferAllocationPool::reassignAllocation(MVKMTLBufferAllocation* ba) {
+    if (_nextOffset >= _mtlBufferLength) { addMTLBuffer(); }
+
+    uint64_t newIndex = _mtlBuffers.size() - 1;
+    ba->_poolIndex = newIndex;
+    ba->_mtlBuffer = _mtlBuffers[newIndex].mtlBuffer;
+    ba->_offset = _nextOffset;
+    _nextOffset += _allocationLength;
+}
+
+void MVKMTLBufferAllocationPool::trimUnlocked() {
+    if (_mtlBuffers.empty()) return;
+
+    uint64_t currentIdx = _mtlBuffers.size() - 1;
+    bool currentIsPartial = (_nextOffset > 0 && _nextOffset < _mtlBufferLength);
+
+    for (uint64_t i = 0; i < _mtlBuffers.size(); i++) {
+        auto& tracker = _mtlBuffers[i];
+
+        if (tracker.mtlBuffer == nil) continue;       // Already released
+        if (tracker.allocationCount > 0) continue;     // Still in use
+        if (i == currentIdx && currentIsPartial) continue; // Current working buffer
+
+        getDevice()->removeResidency(tracker.mtlBuffer);
+        [tracker.mtlBuffer release];
+        tracker.mtlBuffer = nil;
+    }
+}
+
+void MVKMTLBufferAllocationPool::trim() {
+    if (_isThreadSafe) {
+        std::lock_guard<std::mutex> lock(_lock);
+        trimUnlocked();
+    } else {
+        trimUnlocked();
+    }
+}
+
+MVKMTLBufferAllocationPool::PoolStats MVKMTLBufferAllocationPool::getStats() {
+    if (_isThreadSafe) {
+        std::lock_guard<std::mutex> lock(_lock);
+        return getStatsUnlocked();
+    }
+    return getStatsUnlocked();
+}
+
+MVKMTLBufferAllocationPool::PoolStats MVKMTLBufferAllocationPool::getStatsUnlocked() {
+    PoolStats stats;
+    for (auto& tracker : _mtlBuffers) {
+        stats.totalMTLBuffers++;
+        stats.totalBytes += _mtlBufferLength;
+        if (tracker.mtlBuffer == nil) {
+            stats.releasedSlots++;
+            stats.releasedBytes += _mtlBufferLength;
+        } else if (tracker.allocationCount > 0) {
+            stats.activeMTLBuffers++;
+            stats.activeBytes += _mtlBufferLength;
+        } else {
+            stats.emptyMTLBuffers++;
+        }
+    }
+    return stats;
 }
 
 
@@ -146,5 +226,25 @@ MVKMTLBufferAllocator::MVKMTLBufferAllocator(MVKDevice* device, NSUInteger maxRe
 
 MVKMTLBufferAllocator::~MVKMTLBufferAllocator() {
     mvkDestroyContainerContents(_regionPools);
+}
+
+void MVKMTLBufferAllocator::trim() {
+    for (auto* pool : _regionPools) {
+        pool->trim();
+    }
+}
+
+MVKMTLBufferAllocator::AllocatorStats MVKMTLBufferAllocator::getStats() {
+    AllocatorStats stats;
+    for (auto* pool : _regionPools) {
+        auto ps = pool->getStats();
+        stats.totalMTLBuffers += ps.totalMTLBuffers;
+        stats.activeMTLBuffers += ps.activeMTLBuffers;
+        stats.releasedSlots += ps.releasedSlots;
+        stats.totalBytes += ps.totalBytes;
+        stats.activeBytes += ps.activeBytes;
+        stats.releasedBytes += ps.releasedBytes;
+    }
+    return stats;
 }
 

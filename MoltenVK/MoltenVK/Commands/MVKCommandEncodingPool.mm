@@ -170,6 +170,13 @@ void MVKCommandEncodingPool::clear() {
 	destroyMetalResources();
 }
 
+void MVKCommandEncodingPool::trimBufferAllocators() {
+	lock_guard<mutex> lock(_lock);
+	_mtlBufferAllocator.trim();
+	_privateMtlBufferAllocator.trim();
+	_dedicatedMtlBufferAllocator.trim();
+}
+
 
 #pragma mark Construction
 

@@ -672,6 +672,15 @@ public:
 	/** Retrieves the queue at the lowest queue and queue family indices used by the app. */
 	MVKQueue* getAnyQueue();
 
+	/** Register a command pool for centralized management. */
+	void registerCommandPool(MVKCommandPool* pool);
+
+	/** Unregister a command pool. */
+	void unregisterCommandPool(MVKCommandPool* pool);
+
+	/** Trim all command pool buffer allocators, releasing empty MTLBuffers. */
+	void trimCommandPoolBuffers();
+
 	/** Block the current thread until all queues in this device are idle. */
 	VkResult waitIdle();
 	
@@ -1089,6 +1098,7 @@ protected:
 	MVKSmallVector<std::pair<MVKTimelineSemaphore*, uint64_t>> _awaitingTimelineSem4s;
 	MVKSmallVector<MVKVisibilityBuffer> _visibilityBuffers;
 	MVKLiveResourceSet _liveResources;
+	MVKSmallVector<MVKCommandPool*> _commandPools;
 	std::mutex _rezLock;
 	std::mutex _sem4Lock;
     std::mutex _perfLock;

@@ -580,6 +580,16 @@ void MVKQueueCommandBufferSubmission::finish() {
 	// If a fence exists, signal it.
 	if (_fence) { _fence->signal(); }
 
+	// After GPU completion, trim temp buffer pools periodically
+	uint32_t trimInterval = getMVKConfig().trimCommandPoolInterval;
+	if (trimInterval > 0) {
+		static std::atomic<uint32_t> s_completionCount{0};
+		uint32_t count = s_completionCount.fetch_add(1, std::memory_order_relaxed);
+		if (count % trimInterval == 0) {
+			_device->trimCommandPoolBuffers();
+		}
+	}
+
 	this->destroy();
 }
 

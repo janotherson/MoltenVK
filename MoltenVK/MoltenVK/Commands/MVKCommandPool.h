@@ -87,6 +87,9 @@ public:
 	/** Release any held but unused memory back to the system. */
 	void trim();
 
+	/** Trim buffer allocators in the encoding pool, releasing empty MTLBuffers. */
+	void trimBufferAllocators();
+
 
 #pragma mark Construction
 

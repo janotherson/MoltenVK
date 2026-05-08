@@ -87,6 +87,10 @@ void MVKCommandPool::trim() {
 #	include "MVKCommandTypePools.def"
 }
 
+void MVKCommandPool::trimBufferAllocators() {
+	_commandEncodingPool.trimBufferAllocators();
+}
+
 
 #pragma mark Construction
 
@@ -103,9 +107,12 @@ MVKCommandPool::MVKCommandPool(MVKDevice* device,
 	_commandBufferPool(device, usePooling),
 	_commandEncodingPool(this),
 	_queueFamilyIndex(pCreateInfo->queueFamilyIndex)
-{}
+{
+	_device->registerCommandPool(this);
+}
 
 MVKCommandPool::~MVKCommandPool() {
+	_device->unregisterCommandPool(this);
 	for (auto& mvkCB : _allocatedCommandBuffers) {
 		_commandBufferPool.returnObject(mvkCB);
 	}

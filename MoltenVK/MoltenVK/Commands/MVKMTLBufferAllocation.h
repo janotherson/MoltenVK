@@ -90,6 +90,21 @@ public:
 	/** Returns the Vulkan API opaque object controlling this object. */
 	MVKVulkanAPIObject* getVulkanAPIObject() override { return _device->getVulkanAPIObject(); };
 
+	/** Release backing MTLBuffers that have zero active allocations. */
+	void trim();
+
+	/** Pool statistics for telemetry. */
+	struct PoolStats {
+		uint32_t totalMTLBuffers = 0;
+		uint32_t activeMTLBuffers = 0;
+		uint32_t emptyMTLBuffers = 0;
+		uint32_t releasedSlots = 0;
+		uint64_t totalBytes = 0;
+		uint64_t activeBytes = 0;
+		uint64_t releasedBytes = 0;
+	};
+	PoolStats getStats();
+
     /** Configures this instance to dispense MVKMTLBufferAllocation instances of the specified size. */
     MVKMTLBufferAllocationPool(MVKDevice* device, NSUInteger allocationLength, bool makeThreadSafe,
 							   bool isDedicated, MTLStorageMode mtlStorageMode);
@@ -98,12 +113,15 @@ public:
 
 protected:
 	friend class MVKMTLBufferAllocation;
-	
+
 	MVKMTLBufferAllocation* newObject() override;
     void returnAllocationUnlocked(MVKMTLBufferAllocation* ba);
     void returnAllocation(MVKMTLBufferAllocation* ba);
 	uint32_t calcMTLBufferAllocationCount();
     void addMTLBuffer();
+	void trimUnlocked();
+	void reassignAllocation(MVKMTLBufferAllocation* ba);
+	PoolStats getStatsUnlocked();
 
     NSUInteger _nextOffset;
     NSUInteger _allocationLength;
@@ -142,6 +160,20 @@ public:
      * the returnToPool() function on the returned instance.
      */
     MVKMTLBufferAllocation* acquireMTLBufferRegion(NSUInteger length);
+
+	/** Trim all sub-pools, releasing empty MTLBuffers. */
+	void trim();
+
+	/** Aggregate stats across all sub-pools. */
+	struct AllocatorStats {
+		uint32_t totalMTLBuffers = 0;
+		uint32_t activeMTLBuffers = 0;
+		uint32_t releasedSlots = 0;
+		uint64_t totalBytes = 0;
+		uint64_t activeBytes = 0;
+		uint64_t releasedBytes = 0;
+	};
+	AllocatorStats getStats();
 
     /**
      * Configures this instance to dispense MVKMTLBufferAllocation up to the specified
