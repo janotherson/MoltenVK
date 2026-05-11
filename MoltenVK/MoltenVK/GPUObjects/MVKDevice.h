@@ -112,6 +112,7 @@ typedef struct MVKMTLDeviceCapabilities {
 	bool supportsApple8;
 	bool supportsApple9;
 	bool supportsApple10;
+	bool supportsMac1;
 	bool supportsMac2;
 	bool supportsMetal3;
 	bool supportsMetal4;
@@ -121,6 +122,7 @@ typedef struct MVKMTLDeviceCapabilities {
 	bool supportsDepth24Stencil8;
 	bool supports32BitFloatFiltering;
 	bool supports32BitMSAA;
+	bool supportsRenderLinearTextures;
 
 	uint8_t getHighestAppleGPU() const;
 	uint8_t getHighestMacGPU() const;

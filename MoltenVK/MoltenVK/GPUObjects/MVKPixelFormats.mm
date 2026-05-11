@@ -602,7 +602,7 @@ MTLTextureUsage MVKPixelFormats::getMTLTextureUsage(VkImageUsageFlags vkImageUsa
 	bool isStencilFmt = isStencilFormat(mtlFormat);
 	bool isCombinedDepthStencilFmt = isDepthFmt && isStencilFmt;
 	bool isColorFormat = !(isDepthFmt || isStencilFmt);
-	bool linearRenderSupported = _physicalDevice->getMetalFeatures()->renderLinearTextures;
+	bool linearRenderSupported = _physicalDevice && _physicalDevice->getMetalFeatures()->renderLinearTextures;
 	MVKMTLFmtCaps mtlFmtCaps = getCapabilities(mtlFormat, isExtended);
 
 	MTLTextureUsage mtlUsage = MTLTextureUsageUnknown;
@@ -1343,7 +1343,7 @@ void MVKPixelFormats::initMTLVertexFormatCapabilities(const MVKMTLDeviceCapabili
 
 	addMTLVertexFormatDesc( UChar4Normalized_BGRA );
 	
-	if (gpuCaps.supportsApple5 || gpuCaps.supportsMac2) {
+	if (gpuCaps.supportsApple5 || gpuCaps.supportsMac1) {
 		addMTLVertexFormatDesc( FloatRG11B10 );
 		addMTLVertexFormatDesc( FloatRGB9E5 );
 	}
@@ -1612,7 +1612,7 @@ void MVKPixelFormats::setFormatProperties(MVKVkFormatDesc& vkDesc, const MVKMTLD
 		// Start with optimal tiling features, and modify.
 		vkProps.linearTilingFeatures = vkProps.optimalTilingFeatures;
 
-        if (!_physicalDevice->getMetalFeatures()->renderLinearTextures) {
+        if (!gpuCaps.supportsRenderLinearTextures) {
             // On macOS IMR GPUs, linear textures cannot be used as attachments, so disable those features.
             mvkDisableFlags(vkProps.linearTilingFeatures, (kMVKVkFormatFeatureFlagsTexColorAtt |
                                                            kMVKVkFormatFeatureFlagsTexDSAtt |
