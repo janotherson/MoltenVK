@@ -133,7 +133,7 @@ protected:
     NSUInteger _allocationLength;
     NSUInteger _mtlBufferLength;
     MTLStorageMode _mtlStorageMode;
-    struct MTLBufferTracker { id<MTLBuffer> mtlBuffer; uint64_t allocationCount; };
+    struct MTLBufferTracker { id<MTLBuffer> mtlBuffer; uint64_t allocationCount; uint32_t emptyTrimPasses; };
     MVKSmallVector<MTLBufferTracker, 64> _mtlBuffers;
     bool _isThreadSafe;
     uint64_t _currentBufferIndex;

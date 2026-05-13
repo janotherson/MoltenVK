@@ -54,7 +54,7 @@ void MVKMTLBufferAllocationPool::addMTLBuffer() {
                               | MTLResourceCPUCacheModeDefaultCache;
     id<MTLBuffer> newBuffer = [getMTLDevice() newBufferWithLength: _mtlBufferLength
                                                           options: mbOpts];
-    _mtlBuffers.push_back({ newBuffer, 0 });
+    _mtlBuffers.push_back({ newBuffer, 0, 0 });
     getDevice()->makeResident(newBuffer);
     _nextOffset = 0;
     _currentBufferIndex = _mtlBuffers.size() - 1;
@@ -85,7 +85,10 @@ MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::acquireAllocation() {
 }
 
 void MVKMTLBufferAllocationPool::returnAllocationUnlocked(MVKMTLBufferAllocation* ba) {
-    // If backing buffer was already released by trim, just return to free list
+    // Defensive: if backing buffer is nil, this indicates a double-free bug in calling code.
+    // Under normal pool semantics: allocation in free list → no owner → must acquire before return.
+    // acquireAllocationUnlocked() always nil-checks and reassigns, so correct code paths
+    // never reach here with nil buffer. This guard prevents use-after-trim on already-freed allocations.
     if (ba->_poolIndex < _mtlBuffers.size() &&
         _mtlBuffers[ba->_poolIndex].mtlBuffer == nil) {
         MVKAssert(_mtlBuffers[ba->_poolIndex].allocationCount == 0,
@@ -160,18 +163,43 @@ void MVKMTLBufferAllocationPool::reassignAllocation(MVKMTLBufferAllocation* ba) 
 void MVKMTLBufferAllocationPool::trimUnlocked() {
     if (_mtlBuffers.empty()) return;
 
+    // Count live (non-nil) and active (in-use) buffers
+    uint32_t liveCount = 0;
+    uint32_t activeCount = 0;
+    for (auto& tracker : _mtlBuffers) {
+        if (tracker.mtlBuffer != nil) {
+            liveCount++;
+            if (tracker.allocationCount > 0) activeCount++;
+        }
+    }
+
+    // Adaptive retention: keep enough buffers to satisfy current demand
+    // plus a small margin to avoid release/recreate thrashing.
+    uint32_t keepCount = activeCount + std::min(activeCount, (uint32_t)4);
+    if (liveCount <= keepCount) return;
+
+    uint32_t toRelease = liveCount - keepCount;
+    uint32_t released = 0;
+
     bool currentIsPartial = (_nextOffset > 0 && _nextOffset < _mtlBufferLength);
 
-    for (uint64_t i = 0; i < _mtlBuffers.size(); i++) {
+    for (uint64_t i = 0; i < _mtlBuffers.size() && released < toRelease; i++) {
         auto& tracker = _mtlBuffers[i];
 
-        if (tracker.mtlBuffer == nil) continue;       // Already released
-        if (tracker.allocationCount > 0) continue;     // Still in use
-        if (i == _currentBufferIndex && currentIsPartial) continue; // Current working buffer
+        if (tracker.mtlBuffer == nil) continue;
+        if (tracker.allocationCount > 0) {
+            tracker.emptyTrimPasses = 0;
+            continue;
+        }
+        if (i == _currentBufferIndex && currentIsPartial) continue;
+
+        tracker.emptyTrimPasses++;
+        if (tracker.emptyTrimPasses < 2) continue;
 
         getDevice()->removeResidency(tracker.mtlBuffer);
         [tracker.mtlBuffer release];
         tracker.mtlBuffer = nil;
+        released++;
     }
 }
 
