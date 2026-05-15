@@ -38,7 +38,7 @@ VkResult MVKCommandPool::reset(VkCommandPoolResetFlags flags) {
 
 	for (auto& cb : _allocatedCommandBuffers) { cb->reset(cmdBuffFlags); }
 
-	if (releaseRez) { trim(); }
+	if (releaseRez) { trimBufferAllocators(); }
 
 	return VK_SUCCESS;
 }

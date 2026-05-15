@@ -137,6 +137,7 @@ protected:
     MVKSmallVector<MTLBufferTracker, 64> _mtlBuffers;
     bool _isThreadSafe;
     uint64_t _currentBufferIndex;
+    bool _dirtyFlag;
 };
 
 

@@ -58,6 +58,7 @@ void MVKMTLBufferAllocationPool::addMTLBuffer() {
     getDevice()->makeResident(newBuffer);
     _nextOffset = 0;
     _currentBufferIndex = _mtlBuffers.size() - 1;
+    _dirtyFlag = true;
 }
 
 MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::acquireAllocationUnlocked() {
@@ -99,6 +100,7 @@ void MVKMTLBufferAllocationPool::returnAllocationUnlocked(MVKMTLBufferAllocation
 
     if (!--_mtlBuffers[ba->_poolIndex].allocationCount) {
         [ba->_mtlBuffer setPurgeableState: MTLPurgeableStateVolatile];
+        _dirtyFlag = true;  // Buffer became empty, trim may want to release it
     }
     returnObject(ba);
 }
@@ -123,6 +125,7 @@ MVKMTLBufferAllocationPool::MVKMTLBufferAllocationPool(MVKDevice* device, NSUInt
     _mtlStorageMode = mtlStorageMode;
     _nextOffset = _mtlBufferLength;     // Force a MTLBuffer to be added on first access
     _currentBufferIndex = std::numeric_limits<uint64_t>::max();  // sentinel: no buffer yet
+    _dirtyFlag = false;
 }
 
 // Returns the number of regions to allocate per MTLBuffer, as determined from the allocation size.
@@ -161,7 +164,7 @@ void MVKMTLBufferAllocationPool::reassignAllocation(MVKMTLBufferAllocation* ba) 
 }
 
 void MVKMTLBufferAllocationPool::trimUnlocked() {
-    if (_mtlBuffers.empty()) return;
+    if (_mtlBuffers.empty() || !_dirtyFlag) return;
 
     // Count live (non-nil) and active (in-use) buffers
     uint32_t liveCount = 0;
@@ -201,6 +204,8 @@ void MVKMTLBufferAllocationPool::trimUnlocked() {
         tracker.mtlBuffer = nil;
         released++;
     }
+
+    _dirtyFlag = false;
 }
 
 void MVKMTLBufferAllocationPool::trim() {
