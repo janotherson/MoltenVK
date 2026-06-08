@@ -112,6 +112,9 @@ VkResult MVKQueue::submit(uint32_t submitCount, const S* pSubmits, VkFence fence
         return submit(new MVKQueueCommandBufferSubmission(this, (S*)nullptr, fence, cmdUse));
     }
 
+    // Increment submission counter for orphaned memory tracking
+    uint64_t counter = _device->incrementSubmissionCounter();
+
     VkResult rslt = VK_SUCCESS;
     for (uint32_t sIdx = 0; sIdx < submitCount; sIdx++) {
         VkFence fenceOrNil = (sIdx == (submitCount - 1)) ? fence : VK_NULL_HANDLE; // last one gets the fence
@@ -138,6 +141,11 @@ VkResult MVKQueue::submit(uint32_t submitCount, const S* pSubmits, VkFence fence
         VkResult subRslt = submit(mvkSub);
         if (rslt == VK_SUCCESS) { rslt = subRslt; }
     }
+
+    if (getMVKConfig().orphanedMemoryLogInterval > 0 && counter % getMVKConfig().orphanedMemoryLogInterval == 0) {
+        _device->trimOrphanedDeviceMemory();
+    }
+
     return rslt;
 }
 
@@ -583,7 +591,8 @@ void MVKQueueCommandBufferSubmission::finish() {
 	// After GPU completion, trim temp buffer pools periodically
 	uint32_t trimInterval = getMVKConfig().trimCommandPoolInterval;
 	if (trimInterval > 0) {
-		uint32_t count = _device->incrementTrimCompletionCount() - 1;
+		static std::atomic<uint32_t> s_completionCount{0};
+		uint32_t count = s_completionCount.fetch_add(1, std::memory_order_relaxed) + 1;
 		if (count % trimInterval == 0) {
 			_device->trimCommandPoolBuffers();
 		}

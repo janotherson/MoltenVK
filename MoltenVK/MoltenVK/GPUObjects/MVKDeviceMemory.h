@@ -96,6 +96,18 @@ public:
 	/** Returns whether this device memory is currently mapped to host memory. */
 	bool isMapped() { return _mappedRange.size > 0; }
 
+	/** Returns whether this device memory is an orphaned block (no bound resources). */
+	bool isOrphanedBlock() const {
+		if (_mtlHeap) return false;
+		if (_isHostMemImported) return false;
+		if (_externalMemoryHandleType != 0) return false;
+		if (!_mtlBuffer) return false;
+		if (_mappedRange.size > 0) return false;
+		if (!_buffers.empty()) return false;
+		if (!_imageMemoryBindings.empty()) return false;
+		return true;
+	}
+
 	/** If this memory is host-visible, the specified memory range is flushed to the device. */
 	VkResult flushToDevice(VkDeviceSize offset, VkDeviceSize size);
 
@@ -148,6 +160,7 @@ protected:
 	friend class MVKImage;
     friend class MVKImageMemoryBinding;
     friend class MVKImagePlane;
+    friend class MVKDevice;
 
 	void propagateDebugName() override;
 	VkDeviceSize adjustMemorySize(VkDeviceSize size, VkDeviceSize offset);
@@ -186,5 +199,15 @@ protected:
 	bool _isDedicated = false;
 	bool _isHostMemImported = false;
 	VkExternalMemoryHandleTypeFlags _externalMemoryHandleType = 0u;
+	uint64_t _lastOrphanedEpoch{0};
+	uint32_t _orphanedTrimPasses{0};
+                                      // UPSTREAM NOTE: Misleading name. Should be _orphanedAtTrimPass
+                                      // to store absolute trim pass number (tracks when block became orphan).
+                                      // Current implementation: stores 0 at orphan start, then
+                                      // checked as (_trimPassCount - _orphanedTrimPasses).
+                                      // This works for telemetry but fails to properly handle
+                                      // re-orphaned blocks. Future release phase needs:
+                                      // _orphanedTrimPasses = _device->_trimPassCount at orphan time.
+	bool _backingReleased{false};
 };
 

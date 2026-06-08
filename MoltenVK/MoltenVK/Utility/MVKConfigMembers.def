@@ -87,6 +87,8 @@ MVK_CONFIG_MEMBER_STRING(shaderDumpDir,                   char*,                
 MVK_CONFIG_MEMBER(shaderLogEstimatedGLSL,                 VkBool32,                                 SHADER_LOG_ESTIMATED_GLSL)
 MVK_CONFIG_MEMBER(liveCheckAllResources,                  VkBool32,                                 LIVE_CHECK_ALL_RESOURCES)
 MVK_CONFIG_MEMBER(trimCommandPoolInterval,                uint32_t,                                 TRIM_COMMAND_POOL_INTERVAL)
+MVK_CONFIG_MEMBER(logOrphanedDeviceMemory,                VkBool32,                                 LOG_ORPHANED_DEVICE_MEMORY)
+MVK_CONFIG_MEMBER(orphanedMemoryLogInterval,              uint32_t,                                 ORPHANED_MEMORY_LOG_INTERVAL)
 
 #undef MVK_CONFIG_MEMBER
 #undef MVK_CONFIG_MEMBER_STRING

@@ -158,6 +158,17 @@ void MVKDeviceMemory::removeBuffer(MVKDeviceMemory** pMem, MVKBuffer* mvkBuff) {
 		*pMem = nullptr;
 		std::lock_guard<std::mutex> lock(mem->_rezLock);
 		mvkRemoveAllOccurances(mem->_buffers, mvkBuff);
+		if (mem->_buffers.empty() && mem->_imageMemoryBindings.empty()) {
+			mem->_lastOrphanedEpoch = mem->_device->getSubmissionCounter();
+			// UPSTREAM NOTE: For telemetry, _orphanedTrimPasses initialized to 0.
+			// Semantically: counts idle trim passes since becoming orphan.
+			// For future release phase: should set to _device->_trimPassCount to track
+			// absolute trim pass number when block became orphan. This allows proper
+			// handling of re-orphaned blocks and calculating relative idle time.
+			// Current workaround: Works for telemetry since we check
+			// (_trimPassCount - _orphanedTrimPasses >= minIdleTrimPasses).
+			mem->_orphanedTrimPasses = 0;
+		}
 	}
 	os_unfair_lock_unlock(&s_device_memory_destruction_lock);
 }
@@ -183,6 +194,10 @@ void MVKDeviceMemory::removeImageMemoryBinding(MVKDeviceMemory** pMem, MVKImageM
 		*pMem = nullptr;
 		std::lock_guard<std::mutex> lock(mem->_rezLock);
 		mvkRemoveAllOccurances(mem->_imageMemoryBindings, mvkImg);
+		if (mem->_buffers.empty() && mem->_imageMemoryBindings.empty()) {
+			mem->_lastOrphanedEpoch = mem->_device->getSubmissionCounter();
+			mem->_orphanedTrimPasses = 0;
+		}
 	}
 	os_unfair_lock_unlock(&s_device_memory_destruction_lock);
 }

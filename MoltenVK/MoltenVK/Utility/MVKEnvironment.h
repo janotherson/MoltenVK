@@ -358,3 +358,19 @@ void mvkSetConfig(MVKConfiguration& dstMVKConfig, const MVKConfiguration& srcMVK
 #ifndef MVK_CONFIG_TRIM_COMMAND_POOL_INTERVAL
 #   define MVK_CONFIG_TRIM_COMMAND_POOL_INTERVAL 0
 #endif
+
+/**
+ * Enable logging of orphaned VkDeviceMemory blocks (telemetry-only, no reclaim).
+ * Disabled by default.
+ */
+#ifndef MVK_CONFIG_LOG_ORPHANED_DEVICE_MEMORY
+#   define MVK_CONFIG_LOG_ORPHANED_DEVICE_MEMORY    0
+#endif
+
+/**
+ * Log orphaned device memory telemetry every N submissions.
+ * Zero means disabled.
+ */
+#ifndef MVK_CONFIG_ORPHANED_MEMORY_LOG_INTERVAL
+#   define MVK_CONFIG_ORPHANED_MEMORY_LOG_INTERVAL    0
+#endif

@@ -547,6 +547,16 @@ class MVKLiveList {
 		void unlock() { os_unfair_lock_unlock(&_mtx); }
 	};
 
+	// RAII lock guard for os_unfair_lock
+	class LockGuard {
+		Lock* _lock = nullptr;
+	public:
+		explicit LockGuard(Lock& lock) : _lock(&lock) { _lock->lock(); }
+		~LockGuard() { if (_lock) { _lock->unlock(); } }
+		LockGuard(const LockGuard&) = delete;
+		LockGuard& operator=(const LockGuard&) = delete;
+	};
+
 	struct alignas(64) Group {
 		Lock lock;
 		std::unordered_map<id, uint32_t> entries;
@@ -570,7 +580,18 @@ public:
 
 	void add(id object);
 	void remove(id object);
-	IsLiveResult isLive(id object) { return isLive_(object); }
+	IsLiveResult isLive(id object) { return isLive_(object); };
+
+	template<typename Fn>
+	void forEach(const Fn& fn) {
+		for (size_t i = 0; i < (1 << GROUP_BITS); i++) {
+			Group& g = groups[i];
+			LockGuard guard(g.lock);
+			for (const auto& entry : g.entries) {
+				fn(entry.first);
+			}
+		}
+	}
 
 private:
 	std::pair<Lock*, bool> isLive_(id object);
@@ -682,11 +703,6 @@ public:
 
 	/** Trim all command pool buffer allocators, releasing empty MTLBuffers. */
 	void trimCommandPoolBuffers();
-
-	/** Increment trim completion counter (called by completion handlers). Returns new count. */
-	uint32_t incrementTrimCompletionCount() {
-		return _trimCompletionCount.fetch_add(1, std::memory_order_relaxed) + 1;
-	}
 
 	/** Block the current thread until all queues in this device are idle. */
 	VkResult waitIdle();
@@ -935,6 +951,15 @@ public:
     /** Returns the memory type index corresponding to the specified Metal memory storage mode. */
     uint32_t getVulkanMemoryTypeIndex(MTLStorageMode mtlStorageMode);
 
+	/** Returns the current submission counter for orphaned memory tracking. */
+	uint64_t getSubmissionCounter() const { return _submissionCounter.load(std::memory_order_relaxed); }
+
+	/** Increments and returns the submission counter. */
+	uint64_t incrementSubmissionCounter() { return _submissionCounter.fetch_add(1, std::memory_order_relaxed) + 1; }
+
+	/** Audit and log orphaned device memory blocks (telemetry-only). */
+	void trimOrphanedDeviceMemory();
+
 	/** Returns a default MTLSamplerState to populate empty array element descriptors. */
 	id<MTLSamplerState> getDefaultMTLSamplerState();
 
@@ -1106,7 +1131,11 @@ protected:
 	MVKSmallVector<MVKVisibilityBuffer> _visibilityBuffers;
 	MVKLiveResourceSet _liveResources;
 	MVKSmallVector<MVKCommandPool*> _commandPools;
-	std::atomic<uint32_t> _trimCompletionCount{0};
+	std::mutex _rezLock;
+
+	std::atomic<uint64_t> _submissionCounter{0};
+	uint64_t _trimPassCount{0};
+	MVKSmallVector<MVKDeviceMemory*> _deviceMemories;
 
 	/**
 	 * LOCK ORDERING
@@ -1133,7 +1162,6 @@ protected:
 	 *
 	 * Only trimCommandPoolBuffers() acquires all three locks.
 	 */
-	std::mutex _rezLock;
 	std::mutex _sem4Lock;
     std::mutex _perfLock;
 	std::mutex _vizLock;

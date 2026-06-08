@@ -41,6 +41,105 @@
 
 using namespace std;
 
+#pragma mark -
+#pragma mark Metal Allocation Tracking
+
+#import <objc/runtime.h>
+
+// Global tracking state for cumulative metal allocations
+static std::atomic<uint64_t> g_metalBufferAllocTotal{0};
+static std::atomic<uint64_t> g_metalBufferAllocCount{0};
+static std::atomic<uint64_t> g_metalTextureAllocTotal{0};
+static std::atomic<uint64_t> g_metalTextureAllocCount{0};
+static std::atomic<uint64_t> g_metalHeapAllocTotal{0};
+static std::atomic<uint64_t> g_metalHeapAllocCount{0};
+
+#if MVK_USE_METAL_PRIVATE_API
+
+static IMP g_origNewBufferWithLength = nullptr;
+static IMP g_origNewTextureWithDesc = nullptr;
+static IMP g_origNewHeapWithDesc = nullptr;
+
+static id<MTLBuffer> swizzled_newBufferWithLength(id self, SEL _cmd,
+                                                  NSUInteger length,
+                                                  MTLResourceOptions options) {
+	typedef id<MTLBuffer>(*OrigFn)(id, SEL, NSUInteger, MTLResourceOptions);
+	id<MTLBuffer> result = ((OrigFn)g_origNewBufferWithLength)(self, _cmd, length, options);
+	if (result) {
+		g_metalBufferAllocTotal.fetch_add(result.allocatedSize, std::memory_order_relaxed);
+		g_metalBufferAllocCount.fetch_add(1, std::memory_order_relaxed);
+	}
+	return result;
+}
+
+static id<MTLTexture> swizzled_newTextureWithDesc(id self, SEL _cmd,
+                                                  MTLTextureDescriptor* desc) {
+	typedef id<MTLTexture>(*OrigFn)(id, SEL, MTLTextureDescriptor*);
+	id<MTLTexture> result = ((OrigFn)g_origNewTextureWithDesc)(self, _cmd, desc);
+	if (result) {
+		g_metalTextureAllocTotal.fetch_add(result.allocatedSize, std::memory_order_relaxed);
+		g_metalTextureAllocCount.fetch_add(1, std::memory_order_relaxed);
+	}
+	return result;
+}
+
+static id<MTLHeap> swizzled_newHeapWithDesc(id self, SEL _cmd,
+                                             MTLHeapDescriptor* desc) {
+	typedef id<MTLHeap>(*OrigFn)(id, SEL, MTLHeapDescriptor*);
+	id<MTLHeap> result = ((OrigFn)g_origNewHeapWithDesc)(self, _cmd, desc);
+	if (result) {
+		g_metalHeapAllocTotal.fetch_add(result.size, std::memory_order_relaxed);
+		g_metalHeapAllocCount.fetch_add(1, std::memory_order_relaxed);
+	}
+	return result;
+}
+
+static bool g_trackingInstalled = false;
+
+static void mvkInstallMetalAllocationTracking(id<MTLDevice> mtlDevice) {
+	if (g_trackingInstalled) return;
+
+	Class deviceClass = object_getClass(mtlDevice);
+
+	SEL selBuf = @selector(newBufferWithLength:options:);
+	Method mBuf = class_getInstanceMethod(deviceClass, selBuf);
+	if (mBuf) {
+		g_origNewBufferWithLength = method_setImplementation(mBuf, (IMP)swizzled_newBufferWithLength);
+	}
+
+	SEL selTex = @selector(newTextureWithDescriptor:);
+	Method mTex = class_getInstanceMethod(deviceClass, selTex);
+	if (mTex) {
+		g_origNewTextureWithDesc = method_setImplementation(mTex, (IMP)swizzled_newTextureWithDesc);
+	}
+
+	SEL selHeap = @selector(newHeapWithDescriptor:);
+	Method mHeap = class_getInstanceMethod(deviceClass, selHeap);
+	if (mHeap) {
+		g_origNewHeapWithDesc = method_setImplementation(mHeap, (IMP)swizzled_newHeapWithDesc);
+	}
+
+	g_trackingInstalled = true;
+}
+
+#else // ! MVK_USE_METAL_PRIVATE_API
+
+static inline void mvkInstallMetalAllocationTracking(id<MTLDevice>) {}
+static inline void mvkLogMetalAllocationStats() {
+	printf("  --- Metal Allocation Tracking (cumulative) ---\n");
+	printf("    Buffers created: %llu (%.2f GB total)\n",
+		   g_metalBufferAllocCount.load(),
+		   g_metalBufferAllocTotal.load() / (1024.0 * 1024.0 * 1024.0));
+	printf("    Textures created: %llu (%.2f GB total)\n",
+		   g_metalTextureAllocCount.load(),
+		   g_metalTextureAllocTotal.load() / (1024.0 * 1024.0 * 1024.0));
+	printf("    Heaps created: %llu (%.2f GB total)\n",
+		   g_metalHeapAllocCount.load(),
+		   g_metalHeapAllocTotal.load() / (1024.0 * 1024.0 * 1024.0));
+}
+
+#endif // MVK_USE_METAL_PRIVATE_API
+
 
 #if MVK_MACOS
 #	include <AppKit/AppKit.h>
@@ -4505,12 +4604,125 @@ void MVKDevice::trimCommandPoolBuffers() {
 
 MVKDeviceMemory* MVKDevice::allocateMemory(const VkMemoryAllocateInfo* pAllocateInfo,
 										   const VkAllocationCallbacks* pAllocator) {
-	return new MVKDeviceMemory(this, pAllocateInfo, pAllocator);
+	MVKDeviceMemory* mvkDevMem = new MVKDeviceMemory(this, pAllocateInfo, pAllocator);
+	if (mvkDevMem->getConfigurationResult() != VK_SUCCESS) {
+		return mvkDevMem;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(_rezLock);
+		_deviceMemories.push_back(mvkDevMem);
+	}
+
+	return mvkDevMem;
 }
 
 void MVKDevice::freeMemory(MVKDeviceMemory* mvkDevMem,
 						   const VkAllocationCallbacks* pAllocator) {
-	if (mvkDevMem) { mvkDevMem->destroy(); }
+	if (!mvkDevMem) { return; }
+
+	{
+		std::lock_guard<std::mutex> lock(_rezLock);
+		mvkRemoveFirstOccurance(_deviceMemories, mvkDevMem);
+	}
+
+	mvkDevMem->destroy();
+}
+
+void MVKDevice::trimOrphanedDeviceMemory() {
+	_trimPassCount++;
+	uint64_t submissionCount = _submissionCounter.load(std::memory_order_relaxed);
+
+	uint64_t metalTotal = 0;
+	if ([_physicalDevice->getMTLDevice() respondsToSelector:@selector(currentAllocatedSize)]) {
+		metalTotal = _physicalDevice->getMTLDevice().currentAllocatedSize;
+	}
+
+	uint64_t heapTotal = 0;
+	uint32_t heapCount = 0;
+	uint64_t bufferBackedTotal = 0;
+	uint32_t bufferBackedCount = 0;
+	uint32_t devMemCount = 0;
+	uint32_t totalBoundBuffers = 0;
+	uint32_t totalBoundImages = 0;
+	uint32_t heapsEmpty = 0;
+	uint32_t heapsSparse = 0;
+	uint64_t heapsSparseBytes = 0;
+	uint32_t orphanedBufferBacked = 0;
+	uint64_t orphanedBufferBackedBytes = 0;
+
+	static uint32_t s_lastHeapCount = 0;
+
+	{
+		std::lock_guard<std::mutex> lock(_rezLock);
+		devMemCount = (uint32_t)_deviceMemories.size();
+
+		for (auto* mem : _deviceMemories) {
+			uint32_t nBuf = (uint32_t)mem->_buffers.size();
+			uint32_t nImg = (uint32_t)mem->_imageMemoryBindings.size();
+			totalBoundBuffers += nBuf;
+			totalBoundImages += nImg;
+
+			if (mem->_mtlHeap) {
+				heapCount++;
+				uint64_t sz = mem->_mtlHeap.size;
+				heapTotal += sz;
+
+				uint32_t totalRes = nBuf + nImg;
+				if (totalRes == 0) heapsEmpty++;
+				else if (totalRes < 10) {
+					heapsSparse++;
+					heapsSparseBytes += sz;
+				}
+			} else if (mem->_mtlBuffer) {
+				bufferBackedCount++;
+				bufferBackedTotal += mem->_mtlBuffer.allocatedSize;
+			}
+
+			uint32_t totalRes = nBuf + nImg;
+			if (totalRes == 0) {
+				if (mem->isOrphanedBlock()) {
+					orphanedBufferBacked++;
+					orphanedBufferBackedBytes += mem->_allocationSize;
+				}
+			}
+		}
+
+		if (heapCount != s_lastHeapCount) {
+			MVKLogInfo("  --- Per-Heap Detail (count changed %u -> %u) ---",
+					   s_lastHeapCount, heapCount);
+			uint32_t idx = 0;
+			for (auto* mem : _deviceMemories) {
+				if (mem->_mtlHeap) {
+					MVKLogInfo("    Heap[%u]: %.0f MB, %u bufs, %u imgs",
+							   idx,
+							   mem->_mtlHeap.size / (1024.0*1024.0),
+							   (uint32_t)mem->_buffers.size(),
+							   (uint32_t)mem->_imageMemoryBindings.size());
+				}
+				idx++;
+			}
+			s_lastHeapCount = heapCount;
+		}
+	}
+
+	bool shouldLog = getMVKConfig().logOrphanedDeviceMemory;
+	if (!shouldLog) return;
+
+	MVKLogInfo("=== Memory Audit (pass %llu, submission %llu) ===", _trimPassCount, submissionCount);
+	if (metalTotal > 0) {
+		MVKLogInfo("  MTLDevice.currentAllocatedSize: %.2f GB",
+				   metalTotal / (1024.0*1024.0*1024.0));
+	}
+	MVKLogInfo("  VkDeviceMemory: %u blocks (%u heaps %.2f GB, %u buffers %.2f GB)",
+			   devMemCount,
+			   heapCount, heapTotal / (1024.0*1024.0*1024.0),
+			   bufferBackedCount, bufferBackedTotal / (1024.0*1024.0*1024.0));
+	MVKLogInfo("  Bound resources: %u buffers, %u images",
+			   totalBoundBuffers, totalBoundImages);
+	MVKLogInfo("  Health: %u empty, %u sparse (<10 res, %.2f GB), %u orphaned (%.2f GB)",
+			   heapsEmpty, heapsSparse, heapsSparseBytes / (1024.0*1024.0*1024.0),
+			   orphanedBufferBacked, orphanedBufferBackedBytes / (1024.0*1024.0*1024.0));
 }
 
 // Look for an available pre-reserved private data slot and return its address if found.
@@ -5128,6 +5340,7 @@ MVKDevice::MVKDevice(MVKPhysicalDevice* physicalDevice, const VkDeviceCreateInfo
 	initQueues(pCreateInfo);
 	reservePrivateData(pCreateInfo);
 	initConfiguration();
+	mvkInstallMetalAllocationTracking(_physicalDevice->getMTLDevice());
 
 	if (!physicalDevice->_gpuCapabilities.isAppleGPU &&
 	        (_enabledFeatures.robustBufferAccess || _enabledImageRobustnessFeatures.robustImageAccess)) {

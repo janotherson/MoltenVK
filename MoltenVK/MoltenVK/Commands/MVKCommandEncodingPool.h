@@ -142,6 +142,17 @@ public:
 	/** Trim all buffer allocators, releasing empty MTLBuffers. */
 	void trimBufferAllocators();
 
+#pragma mark Telemetry
+
+	typedef MVKMTLBufferAllocator::AllocatorStats AllocatorStats;
+
+	size_t getTransferImagesCount();
+	size_t getTransferBuffersCount();
+	size_t getTransferBufferMemoryCount();
+	AllocatorStats getMtlBufferAllocatorStats();
+	AllocatorStats getPrivateMtlBufferAllocatorStats();
+	AllocatorStats getDedicatedMtlBufferAllocatorStats();
+
 #pragma mark Construction
 
 	MVKCommandEncodingPool(MVKCommandPool* commandPool);

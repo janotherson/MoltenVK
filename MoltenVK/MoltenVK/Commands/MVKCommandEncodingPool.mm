@@ -177,6 +177,36 @@ void MVKCommandEncodingPool::trimBufferAllocators() {
 	_dedicatedMtlBufferAllocator.trim();
 }
 
+size_t MVKCommandEncodingPool::getTransferImagesCount() {
+	lock_guard<mutex> lock(_lock);
+	return _transferImages.size();
+}
+
+size_t MVKCommandEncodingPool::getTransferBuffersCount() {
+	lock_guard<mutex> lock(_lock);
+	return _transferBuffers.size();
+}
+
+size_t MVKCommandEncodingPool::getTransferBufferMemoryCount() {
+	lock_guard<mutex> lock(_lock);
+	return _transferBufferMemory.size();
+}
+
+MVKCommandEncodingPool::AllocatorStats MVKCommandEncodingPool::getMtlBufferAllocatorStats() {
+	lock_guard<mutex> lock(_lock);
+	return _mtlBufferAllocator.getStats();
+}
+
+MVKCommandEncodingPool::AllocatorStats MVKCommandEncodingPool::getPrivateMtlBufferAllocatorStats() {
+	lock_guard<mutex> lock(_lock);
+	return _privateMtlBufferAllocator.getStats();
+}
+
+MVKCommandEncodingPool::AllocatorStats MVKCommandEncodingPool::getDedicatedMtlBufferAllocatorStats() {
+	lock_guard<mutex> lock(_lock);
+	return _dedicatedMtlBufferAllocator.getStats();
+}
+
 
 #pragma mark Construction
 

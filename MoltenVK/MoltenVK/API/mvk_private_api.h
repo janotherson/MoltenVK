@@ -248,6 +248,8 @@ typedef struct {
 	VkBool32 shaderLogEstimatedGLSL;                                           /**< MVK_CONFIG_SHADER_LOG_ESTIMATED_GLSL */
 	VkBool32 liveCheckAllResources;                                            /**< MVK_CONFIG_LIVE_CHECK_ALL_RESOURCES */
 	uint32_t trimCommandPoolInterval;                                           /**< MVK_CONFIG_TRIM_COMMAND_POOL_INTERVAL */
+	VkBool32 logOrphanedDeviceMemory;                                          /**< MVK_CONFIG_LOG_ORPHANED_DEVICE_MEMORY */
+	uint32_t orphanedMemoryLogInterval;                                        /**< MVK_CONFIG_ORPHANED_MEMORY_LOG_INTERVAL */
 } MVKConfiguration;
 
 // Legacy support for renamed struct elements.
