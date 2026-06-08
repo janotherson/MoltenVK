@@ -155,13 +155,8 @@ MTLTextureDescriptor* MVKImagePlane::newMTLTextureDescriptor() {
     mtlTexDesc.storageMode = _image->getMTLStorageMode();
     mtlTexDesc.cpuCacheMode = _image->getMTLCPUCacheMode();
     // For 2D views of 3D and block texel views, we alias the underlying memory.
-    // For color render targets used as transfer sources, MTLBlitCommandEncoder
-    // copies the lossless-compressed tile layout directly rather than the
-    // logical pixel values, which corrupts readback on Apple Silicon (#2220).
-    // Ensure layout remains consistent by disabling GPU layout optimization.
-    mtlTexDesc.allowGPUOptimizedContents = !_image->_is2DViewOn3DImageCompatible
-                                        && !_image->_isBlockTexelViewCompatible
-                                        && !_image->_isColorAttachmentTransferSrc;
+    // Ensure that it remains consistent by disabling GPU layout optimization.
+    mtlTexDesc.allowGPUOptimizedContents = !_image->_is2DViewOn3DImageCompatible && !_image->_isBlockTexelViewCompatible;
 
     return mtlTexDesc;
 }
@@ -1319,9 +1314,6 @@ MVKImage::MVKImage(MVKDevice* device, const VkImageCreateInfo* pCreateInfo) : MV
 
 	_is2DViewOn3DImageCompatible = mvkIsAnyFlagEnabled(pCreateInfo->flags, VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT | VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT);
 	_isBlockTexelViewCompatible = mvkIsAnyFlagEnabled(pCreateInfo->flags, VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
-	_isColorAttachmentTransferSrc = mvkAreAllFlagsEnabled(pCreateInfo->usage,
-														  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-														  VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 }
 
 VkSampleCountFlagBits MVKImage::validateSamples(const VkImageCreateInfo* pCreateInfo, bool isAttachment) {
@@ -1885,10 +1877,7 @@ id<MTLTexture> MVKImageViewPlane::newMTLTexture() {
     NSRange sliceRange = NSMakeRange(_imageView->_subresourceRange.baseArrayLayer, _imageView->_subresourceRange.layerCount);
 
     // Support 2D views of 3D textures and block texel views using memory aliasing.
-    const bool is2dViewOf3d = image->_is2DViewOn3DImageCompatible &&
-        image->getImageType() == VK_IMAGE_TYPE_3D &&
-        (_imageView->_mtlTextureType == MTLTextureType2D || _imageView->_mtlTextureType == MTLTextureType2DArray);
-
+    const bool is2dViewOf3d = _imageView->getIs2dViewOf3d();
     const bool imageCompressed = image->getIsCompressed();
     const bool viewCompressed = getPixelFormats()->getFormatType(_mtlPixFmt) == kMVKFormatCompressed;
     const bool isBlockTexelView = image->_isBlockTexelViewCompatible && imageCompressed && !viewCompressed;
@@ -2242,7 +2231,8 @@ MVKImageView::MVKImageView(MVKDevice* device, const VkImageViewCreateInfo* pCrea
 		_subresourceRange.levelCount = _image->getMipLevelCount() - _subresourceRange.baseMipLevel;
 	}
 	if (_subresourceRange.layerCount == VK_REMAINING_ARRAY_LAYERS) {
-		_subresourceRange.layerCount = _image->getLayerCount() - _subresourceRange.baseArrayLayer;
+		uint32_t imgLayerCnt = getIs2dViewOf3d() ? _image->getExtent3D(0, _subresourceRange.baseMipLevel).depth : _image->getLayerCount();
+		_subresourceRange.layerCount = imgLayerCnt - _subresourceRange.baseArrayLayer;
 	}
 
 	auto& mtlFeats = getMetalFeatures();
