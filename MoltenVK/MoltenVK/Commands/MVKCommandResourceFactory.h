@@ -44,6 +44,7 @@ typedef struct MVKRPSKeyBlitImg {
 	uint8_t srcFilter : 4;					/**< as MTLSamplerMinMagFilter */
 	uint8_t srcAspect = 0;					/**< as VkImageAspectFlags */
 	uint8_t dstSampleCount = 0;
+	uint32_t srcSwizzle = 0;
 
 	MVKRPSKeyBlitImg() : srcMTLPixelFormat(0), dstMTLPixelFormat(0), srcMTLTextureType(0), srcFilter(0) {}
 
@@ -54,6 +55,7 @@ typedef struct MVKRPSKeyBlitImg {
 		if (srcFilter != rhs.srcFilter) { return false; }
 		if (srcAspect != rhs.srcAspect) { return false; }
 		if (dstSampleCount != rhs.dstSampleCount) { return false; }
+		if (srcSwizzle != rhs.srcSwizzle) { return false; }
 		return true;
 	}
 
@@ -88,6 +90,9 @@ typedef struct MVKRPSKeyBlitImg {
 
 		hash <<= 8;
 		hash |= dstSampleCount;
+
+		hash <<= 32;
+		hash |= srcSwizzle;
 		return hash;
 	}
 
@@ -354,11 +359,18 @@ public:
 
 	/** Returns a new MTLComputePipelineState for converting the contents of an indirect buffer. */
 	id<MTLComputePipelineState> newCmdDrawIndirectConvertBuffersMTLComputePipelineState(bool indexed,
-																						MVKVulkanAPIDeviceObject* owner);
+																																	   MVKVulkanAPIDeviceObject* owner);
+
+	/** Returns a new MTLComputePipelineState for emulating indirect draw count. */
+	id<MTLComputePipelineState> newCmdDrawIndirectCountConvertBuffersMTLComputePipelineState(bool indexed,
+																				 MVKVulkanAPIDeviceObject* owner);
+
+	/** Returns a new MTLComputePipelineState for copying zero-divisor vertex data for an indirect draw. */
+	id<MTLComputePipelineState> newCmdDrawIndirectCopyZeroDivisorVertexBuffersMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner);
 
 	/** Returns a new MTLComputePipelineState for converting an indirect buffer for use in a tessellated draw. */
 	id<MTLComputePipelineState> newCmdDrawIndirectTessConvertBuffersMTLComputePipelineState(bool indexed,
-																							MVKVulkanAPIDeviceObject* owner);
+																				 MVKVulkanAPIDeviceObject* owner);
 
 	/** Returns a new MTLComputePipelineState for copying an index buffer for use in a tessellated draw. */
 	id<MTLComputePipelineState> newCmdDrawIndexedCopyIndexBufferMTLComputePipelineState(MTLIndexType type,
@@ -397,4 +409,3 @@ protected:
 	id<MTLLibrary> _mtlLibrary;
 	MVKDeviceMemory* _transferImageMemory;
 };
-
