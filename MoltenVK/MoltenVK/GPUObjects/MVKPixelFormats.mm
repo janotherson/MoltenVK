@@ -1039,6 +1039,12 @@ void MVKPixelFormats::initVkFormatCapabilities() {
     addVkFormatDescChromaSubsampling( G16_B16R16_2PLANE_422_UNORM, Invalid, 2, 16, 2, 1, 8 );
     addVkFormatDescChromaSubsampling( G16_B16_R16_3PLANE_444_UNORM, Invalid, 3, 16, 1, 1, 6 );
 
+	// Extension VK_EXT_ycbcr_2plane_444_formats
+    addVkFormatDescChromaSubsampling( G8_B8R8_2PLANE_444_UNORM, Invalid, 2, 8, 1, 1, 3 );
+    addVkFormatDescChromaSubsampling( G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16, Invalid, 2, 10, 1, 1, 6 );
+    addVkFormatDescChromaSubsampling( G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16, Invalid, 2, 12, 1, 1, 6 );
+    addVkFormatDescChromaSubsampling( G16_B16R16_2PLANE_444_UNORM, Invalid, 2, 16, 1, 1, 6 );
+
 	_vkFormatDescriptions.shrink_to_fit();
 }
 
@@ -1580,6 +1586,12 @@ void MVKPixelFormats::setFormatProperties(MVKVkFormatDesc& vkDesc, const MVKMTLD
 
 	// Optimal tiling features
 	enableFormatFeatures(Read, Tex, mtlPixFmtCaps, vkProps.optimalTilingFeatures);
+#if MVK_XCODE_26 && !MVK_TVOS && !MVK_VISIONOS
+	if (gpuCaps.supportsSamplerReduction && chromaSubsamplingComponentBits == 0 &&
+		mvkIsAnyFlagEnabled(vkProps.optimalTilingFeatures, VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT)) {
+		vkProps.optimalTilingFeatures |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
+	}
+#endif
 	enableFormatFeatures(Filter, Tex, mtlPixFmtCaps, vkProps.optimalTilingFeatures);
 	enableFormatFeatures(Write, Tex, mtlPixFmtCaps, vkProps.optimalTilingFeatures);
 	enableFormatFeatures(Atomic, Tex, mtlPixFmtCaps, vkProps.optimalTilingFeatures);

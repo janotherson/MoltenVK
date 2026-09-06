@@ -29,8 +29,26 @@
 #import "MTLSamplerDescriptor+MoltenVK.h"
 #import "CAMetalLayer+MoltenVK.h"
 
+#import <IOSurface/IOSurfaceRef.h>
+
 using namespace std;
 using namespace SPIRV_CROSS_NAMESPACE;
+
+static id<MTLTexture> mvkGetRootMTLTexture(id<MTLTexture> tex) {
+    while (tex.parentTexture && tex.parentTexture != tex) {
+      tex = tex.parentTexture;
+    }
+    return tex;
+}
+
+static id<MTLTexture> mvkGetBaseMTLTexture(id<MTLTexture> tex) {
+    return tex.parentTexture ? tex.parentTexture : tex;
+}
+
+static uint32_t mvkGetMTLTextureIOSurfaceID(id<MTLTexture> tex) {
+    IOSurfaceRef ioSurface = tex.iosurface;
+    return ioSurface ? IOSurfaceGetID(ioSurface) : 0;
+}
 
 #pragma mark -
 #pragma mark MVKImagePlane
@@ -47,10 +65,15 @@ id<MTLTexture> MVKImagePlane::getMTLTexture() {
         MVKImageMemoryBinding* memoryBinding = getMemoryBinding();
 		MVKDeviceMemory* dvcMem = memoryBinding->_deviceMemory;
 
-        if (_image->_is2DViewOn3DImageCompatible && !dvcMem->ensureMTLHeap()) {
+        // 2D-view-on-3D and block-texel views need a heap-backed texture to alias the memory. ensureMTLHeap() can return
+        // true without creating a heap, so create one if possible, then check getMTLHeap() for an actual heap.
+        if (_image->_is2DViewOn3DImageCompatible || _image->_isBlockTexelViewCompatible) {
+            dvcMem->ensureMTLHeap();
+        }
+        if (_image->_is2DViewOn3DImageCompatible && !dvcMem->getMTLHeap()) {
             MVKAssert(0, "Creating a 2D view of a 3D texture currently requires a placement heap, which is not available.");
         }
-        if (_image->_isBlockTexelViewCompatible && !dvcMem->ensureMTLHeap()) {
+        if (_image->_isBlockTexelViewCompatible && !dvcMem->getMTLHeap()) {
             MVKAssert(0, "Creating an uncompressed view of a compressed texture currently requires a placement heap, which is not available.");
         }
 
@@ -931,13 +954,12 @@ VkResult MVKImage::getMemoryRequirements(VkMemoryRequirements* pMemoryRequiremen
 		mvkDisableFlags(pMemoryRequirements->memoryTypeBits, mvkPD->getPrivateMemoryTypes());
 	}
 
-    // Only transient attachments may use memoryless storage.
-	// Using memoryless as an input attachment requires shader framebuffer fetch, which MoltenVK does not support yet.
-	// TODO: support framebuffer fetch so VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT uses color(m) in shader instead of setFragmentTexture:, which crashes Metal
-    if (!mvkIsAnyFlagEnabled(combinedUsage, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) ||
-		 mvkIsAnyFlagEnabled(combinedUsage, VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) ) {
-        mvkDisableFlags(pMemoryRequirements->memoryTypeBits, mvkPD->getLazilyAllocatedMemoryTypes());
-    }
+	// Only transient attachments may use memoryless storage. Vulkan requires memoryTypeBits to be
+	// identical for all images sharing a tiling, sparse binding flag, external handle types, and
+	// transient attachment usage, so no other usage bit may be taken into account here.
+	if ( !mvkIsAnyFlagEnabled(combinedUsage, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) ) {
+		mvkDisableFlags(pMemoryRequirements->memoryTypeBits, mvkPD->getLazilyAllocatedMemoryTypes());
+	}
 
     return getMemoryBinding(planeIndex)->getMemoryRequirements(pMemoryRequirements);
 }
@@ -1122,6 +1144,16 @@ MTLStorageMode MVKImage::getMTLStorageMode() {
     MTLStorageMode stgMode = _memoryBindings[0]->_deviceMemory->getMTLStorageMode();
 
     if (_ioSurface && stgMode == MTLStorageModePrivate) { stgMode = MTLStorageModeShared; }
+
+	// An input attachment is read through a texture binding, which memoryless storage does not
+	// support, so commit the memory instead. Lazily allocated memory only promises that an
+	// implementation may defer the allocation, and never that it must.
+	// TODO: support framebuffer fetch so VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT reads color(m) in the
+	// shader rather than a texture binding, and memoryless storage can be kept here.
+	if (stgMode == MTLStorageModeMemoryless &&
+		mvkIsAnyFlagEnabled(getCombinedUsage(), VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)) {
+		stgMode = MTLStorageModePrivate;
+	}
 
     return stgMode;
 }
@@ -1848,17 +1880,29 @@ void MVKImageViewPlane::propagateDebugName() { _imageView->setMetalObjectLabel(_
 id<MTLTexture> MVKImageViewPlane::getMTLTexture() {
     // If we can use a Metal texture view, lazily create it, otherwise use the image texture directly.
     if (_useMTLTextureView) {
+        id<MTLTexture> baseMTLTexture = _imageView->_image->getMTLTexture(_planeIndex);
+
+        if (_mtlTexture && !matchesMTLTextureViewBase(baseMTLTexture)) {
+            lock_guard<mutex> lock(_imageView->_lock);
+            if (_mtlTexture && !matchesMTLTextureViewBase(baseMTLTexture)) {
+                releaseMTLTexture();
+            }
+        }
+
         if ( !_mtlTexture && _mtlPixFmt ) {
 
             // Lock and check again in case another thread created the texture view
             lock_guard<mutex> lock(_imageView->_lock);
-            if (_mtlTexture) { return _mtlTexture; }
+            if (_mtlTexture) {
+              if (!matchesMTLTextureViewBase(baseMTLTexture)) {
+                releaseMTLTexture();
+              } else {
+                return _mtlTexture;
+              }
+            }
 
-            id<MTLTexture> tex = newMTLTexture(); // retained
-            getDevice()->getLiveResources().add(tex);
-            _mtlTexture = tex;
-
-            propagateDebugName();
+            MVKAssert(baseMTLTexture, "Attempting to create an MTLTexture view from a nil base texture.");
+            initializeMTLTexture(newMTLTextureFromBaseMTLTexture(baseMTLTexture)); // retained
         }
         return _mtlTexture;
     } else {
@@ -1866,12 +1910,52 @@ id<MTLTexture> MVKImageViewPlane::getMTLTexture() {
     }
 }
 
+bool MVKImageViewPlane::matchesMTLTextureViewBase(id<MTLTexture> mtlTexture) {
+    id<MTLTexture> cachedBaseMTLTexture = mvkGetBaseMTLTexture(_mtlTexture);
+    if (cachedBaseMTLTexture == mtlTexture) { return true; }
+
+    uint32_t cachedBaseIOSurfaceID = mvkGetMTLTextureIOSurfaceID(cachedBaseMTLTexture);
+    uint32_t baseIOSurfaceID = mvkGetMTLTextureIOSurfaceID(mtlTexture);
+    if (cachedBaseIOSurfaceID && baseIOSurfaceID) {
+      return cachedBaseIOSurfaceID == baseIOSurfaceID;
+    }
+
+    id<MTLTexture> cachedRootMTLTexture = mvkGetRootMTLTexture(_mtlTexture);
+    id<MTLTexture> rootMTLTexture = mvkGetRootMTLTexture(mtlTexture);
+    if (cachedRootMTLTexture == rootMTLTexture) { return true; }
+
+    uint32_t cachedRootIOSurfaceID = mvkGetMTLTextureIOSurfaceID(cachedRootMTLTexture);
+    uint32_t rootIOSurfaceID = mvkGetMTLTextureIOSurfaceID(rootMTLTexture);
+    if (cachedRootIOSurfaceID && rootIOSurfaceID) {
+        return cachedRootIOSurfaceID == rootIOSurfaceID;
+    }
+
+    return false;
+}
+
+void MVKImageViewPlane::initializeMTLTexture(id<MTLTexture> mtlTexture) {
+    MVKAssert(mtlTexture, "Attempting to initialize an MVKImageViewPlane with a nil MTLTexture.");
+    if ( !mtlTexture ) { return; }
+
+    getDevice()->getLiveResources().add(mtlTexture);
+    _mtlTexture = mtlTexture;
+
+    propagateDebugName();
+}
+
 // Creates and returns a retained Metal texture as an
 // overlay on the Metal texture of the underlying image.
 id<MTLTexture> MVKImageViewPlane::newMTLTexture() {
-    auto* image = _imageView->_image;
+    return newMTLTextureFromBaseMTLTexture(_imageView->_image->getMTLTexture(_planeIndex));
+}
 
-    id<MTLTexture> mtlTex = image->getMTLTexture(_planeIndex);
+id<MTLTexture> MVKImageViewPlane::newMTLTextureFromBaseMTLTexture(id<MTLTexture> baseMTLTexture) {
+    MVKAssert(baseMTLTexture, "Attempting to create an MTLTexture view from a nil base texture.");
+    if ( !baseMTLTexture ) { return nil; }
+
+    auto* image = _imageView->_image;
+    id<MTLTexture> mtlTex = baseMTLTexture;
+
     id<MTLTexture> aliasTex = nil;
     NSRange levelRange = NSMakeRange(_imageView->_subresourceRange.baseMipLevel, _imageView->_subresourceRange.levelCount);
     NSRange sliceRange = NSMakeRange(_imageView->_subresourceRange.baseArrayLayer, _imageView->_subresourceRange.layerCount);
@@ -1927,7 +2011,7 @@ id<MTLTexture> MVKImageViewPlane::newMTLTexture() {
     }
 
     id<MTLTexture> texView = nil;
-    if (_useSwizzle) {
+    if (_useNativeSwizzle) {
         texView = [mtlTex newTextureViewWithPixelFormat: _mtlPixFmt
                                             textureType: _imageView->_mtlTextureType
                                                  levels: levelRange
@@ -1961,13 +2045,13 @@ MVKImageViewPlane::MVKImageViewPlane(MVKImageView* imageView,
     // and set the _useMTLTextureView variable appropriately.
     if ( _imageView->_image ) {
         _useMTLTextureView = true;
-        // If the view is identical to underlying image, don't bother using a Metal view
+        // If the view is identical to underlying image, don't bother using a Metal view.
         if (_mtlPixFmt == _imageView->_image->getMTLPixelFormat(planeIndex) &&
             _imageView->_mtlTextureType == _imageView->_image->_mtlTextureType &&
             _imageView->_subresourceRange.levelCount == _imageView->_image->_mipLevels &&
             (_imageView->_mtlTextureType == MTLTextureType3D ||
              _imageView->_subresourceRange.layerCount == _imageView->_image->_arrayLayers) &&
-            !_useSwizzle) {
+            !_useNativeSwizzle) {
             _useMTLTextureView = false;
         }
     } else {
@@ -1977,7 +2061,8 @@ MVKImageViewPlane::MVKImageViewPlane(MVKImageView* imageView,
 
 VkResult MVKImageViewPlane::initSwizzledMTLPixelFormat(const VkImageViewCreateInfo* pCreateInfo) {
 
-	_useSwizzle = false;
+	_useNativeSwizzle = false;
+	_useShaderSwizzle = false;
 	_componentSwizzle = pCreateInfo->components;
 	VkImageAspectFlags aspectMask = pCreateInfo->subresourceRange.aspectMask;
 
@@ -2105,15 +2190,22 @@ VkResult MVKImageViewPlane::initSwizzledMTLPixelFormat(const VkImageViewCreateIn
 		}
 	}
 
-	_useSwizzle = !mvkVkComponentMappingsMatch(_componentSwizzle, {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A});
+	bool useSwizzle = !mvkVkComponentMappingsMatch(_componentSwizzle, {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A});
+	_useNativeSwizzle = useSwizzle && getMetalFeatures().nativeTextureSwizzle;
+	_useShaderSwizzle = useSwizzle && !getMetalFeatures().nativeTextureSwizzle;
 	return VK_SUCCESS;
 }
 
-MVKImageViewPlane::~MVKImageViewPlane() {
+void MVKImageViewPlane::releaseMTLTexture() {
 	if (id<MTLTexture> tex = _mtlTexture) {
 		getDevice()->getLiveResources().remove(tex);
 		[tex release];
+		_mtlTexture = nil;
 	}
+}
+
+MVKImageViewPlane::~MVKImageViewPlane() {
+	releaseMTLTexture();
 }
 
 
@@ -2132,7 +2224,7 @@ void MVKImageView::populateMTLRenderPassAttachmentDescriptor(MTLRenderPassAttach
     mtlAttDesc.texture = plane->getMTLTexture();
     // If a swizzle is being applied, use the unswizzled parent texture.
     // This is relevant for depth/stencil attachments that are also sampled and might have forced swizzles.
-    if (plane->_useSwizzle && mtlAttDesc.texture.parentTexture) {
+    if (plane->_useNativeSwizzle && mtlAttDesc.texture.parentTexture) {
         useView = false;
         mtlAttDesc.texture = mtlAttDesc.texture.parentTexture;
     }
@@ -2152,7 +2244,7 @@ void MVKImageView::populateMTLRenderPassAttachmentDescriptorResolve(MTLRenderPas
     mtlAttDesc.resolveTexture = plane->getMTLTexture();
     // If a swizzle is being applied, use the unswizzled parent texture.
     // This is relevant for depth/stencil attachments that are also sampled and might have forced swizzles.
-    if (plane->_useSwizzle && mtlAttDesc.resolveTexture.parentTexture) {
+    if (plane->_useNativeSwizzle && mtlAttDesc.resolveTexture.parentTexture) {
         useView = false;
         mtlAttDesc.resolveTexture = mtlAttDesc.resolveTexture.parentTexture;
     }
@@ -2433,6 +2525,22 @@ MTLSamplerDescriptor* MVKSampler::newMTLSamplerDescriptor(const VkSamplerCreateI
 	if (pCreateInfo->compareEnable && !_requiresConstExprSampler) {
 		mtlSampDesc.compareFunction = mvkMTLCompareFunctionFromVkCompareOp(pCreateInfo->compareOp);
 	}
+
+#if MVK_XCODE_26 && !MVK_TVOS && !MVK_VISIONOS
+	if (@available(macOS 26.0, iOS 26.0, *)) {
+		if (getPhysicalDevice()->getMTLDeviceCapabilities().supportsSamplerReduction) {
+			for (const auto* next = (const VkBaseInStructure*)pCreateInfo->pNext; next; next = next->pNext) {
+				if (next->sType == VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO) {
+					const auto* reductionInfo =
+						(const VkSamplerReductionModeCreateInfo*)next;
+					mtlSampDesc.reductionMode =
+						mvkMTLSamplerReductionModeFromVkSamplerReductionMode(reductionInfo->reductionMode);
+					break;
+				}
+			}
+		}
+	}
+#endif
 
 #if MVK_USE_METAL_PRIVATE_API
 	if (getMVKConfig().useMetalPrivateAPI) {

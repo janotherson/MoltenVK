@@ -93,7 +93,6 @@ id<MTLRenderPipelineState> MVKCommandResourceFactory::newCmdBlitImageMTLRenderPi
 
 	return rps;
 }
-
 id<MTLSamplerState> MVKCommandResourceFactory::newCmdBlitImageMTLSamplerState(MTLSamplerMinMagFilter mtlFilter) {
 
     MTLSamplerDescriptor* sDesc = [MTLSamplerDescriptor new];					// temp retain
@@ -166,6 +165,32 @@ id<MTLRenderPipelineState> MVKCommandResourceFactory::newCmdClearMTLRenderPipeli
 	[plDesc release];															// temp release
 
 	return rps;
+}
+
+static NSString* getSwizzleComponentExpr(VkComponentSwizzle swizzle, const char* identityComponent, bool isFloat) {
+	switch (swizzle) {
+		case VK_COMPONENT_SWIZZLE_ZERO:     return isFloat ? @"0.0" : @"0";
+		case VK_COMPONENT_SWIZZLE_ONE:      return isFloat ? @"1.0" : @"1";
+		case VK_COMPONENT_SWIZZLE_R:        return @"sample.x";
+		case VK_COMPONENT_SWIZZLE_G:        return @"sample.y";
+		case VK_COMPONENT_SWIZZLE_B:        return @"sample.z";
+		case VK_COMPONENT_SWIZZLE_A:        return @"sample.w";
+		case VK_COMPONENT_SWIZZLE_IDENTITY:
+		default:                            return [NSString stringWithUTF8String: identityComponent];
+	}
+}
+
+static NSString* getSwizzledSampleExpr(uint32_t packedSwizzle, NSString* typeStr) {
+	if (!packedSwizzle) { return @"sample"; }
+
+	VkComponentMapping swizzle = mvkUnpackSwizzle(packedSwizzle);
+	bool isFloat = [typeStr isEqualToString: @"float"];
+	return [NSString stringWithFormat: @"%@4(%@, %@, %@, %@)",
+			typeStr,
+			getSwizzleComponentExpr(swizzle.r, "sample.x", isFloat),
+			getSwizzleComponentExpr(swizzle.g, "sample.y", isFloat),
+			getSwizzleComponentExpr(swizzle.b, "sample.z", isFloat),
+			getSwizzleComponentExpr(swizzle.a, "sample.w", isFloat)];
 }
 
 id<MTLFunction> MVKCommandResourceFactory::newBlitFragFunction(MVKRPSKeyBlitImg& blitKey) {
@@ -272,7 +297,9 @@ id<MTLFunction> MVKCommandResourceFactory::newBlitFragFunction(MVKRPSKeyBlitImg&
 			[msl appendLineMVK];
 		}
 		if (!mvkIsAnyFlagEnabled(blitKey.srcAspect, (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
-			[msl appendFormat: @"    out.color = tex.sample(ce_sampler, varyings.v_texCoord%@%@, level(subRez.lod));", coordArg, sliceArg];
+			[msl appendFormat: @"    auto sample = tex.sample(ce_sampler, varyings.v_texCoord%@%@, level(subRez.lod));", coordArg, sliceArg];
+			[msl appendLineMVK];
+			[msl appendFormat: @"    out.color = %@;", getSwizzledSampleExpr(blitKey.srcSwizzle, typeStr)];
 			[msl appendLineMVK];
 		}
 		[msl appendLineMVK: @"    return out;"];
@@ -553,10 +580,21 @@ id<MTLComputePipelineState> MVKCommandResourceFactory::newCmdResolveColorImageMT
 }
 
 id<MTLComputePipelineState> MVKCommandResourceFactory::newCmdDrawIndirectConvertBuffersMTLComputePipelineState(bool indexed,
-																											   MVKVulkanAPIDeviceObject* owner) {
+																																	   MVKVulkanAPIDeviceObject* owner) {
 	return newMTLComputePipelineState(indexed
-									  ? "cmdDrawIndexedIndirectConvertBuffers"
-									  : "cmdDrawIndirectConvertBuffers", owner);
+																	  ? "cmdDrawIndexedIndirectConvertBuffers"
+																	  : "cmdDrawIndirectConvertBuffers", owner);
+}
+
+id<MTLComputePipelineState> MVKCommandResourceFactory::newCmdDrawIndirectCountConvertBuffersMTLComputePipelineState(bool indexed,
+																																																						   MVKVulkanAPIDeviceObject* owner) {
+	return newMTLComputePipelineState(indexed
+																																																						  ? "cmdDrawIndexedIndirectCountConvertBuffers"
+																																																						  : "cmdDrawIndirectCountConvertBuffers", owner);
+}
+
+id<MTLComputePipelineState> MVKCommandResourceFactory::newCmdDrawIndirectCopyZeroDivisorVertexBuffersMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner) {
+	return newMTLComputePipelineState("cmdDrawIndirectCopyZeroDivisorVertexBuffers", owner);
 }
 
 id<MTLComputePipelineState> MVKCommandResourceFactory::newCmdDrawIndirectPopulateIndexesMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner) {
@@ -696,4 +734,3 @@ MVKCommandResourceFactory::~MVKCommandResourceFactory() {
 	_mtlLibrary = nil;
 	if (_transferImageMemory) { _transferImageMemory->destroy(); }
 }
-
