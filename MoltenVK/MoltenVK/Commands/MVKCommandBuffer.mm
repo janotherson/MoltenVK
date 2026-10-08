@@ -466,6 +466,7 @@ void MVKCommandEncoder::encodeCommandsImpl(MVKCommand* command) {
 }
 
 void MVKCommandEncoder::endEncoding() {
+	_occlusionQueryState.flushAccumulation(this);
 	endCurrentMetalEncoding();
 	finishQueries();
 	finishTempMTLBuffers();

@@ -36,6 +36,7 @@ Released TBD
 - Reduce the memory used by cached shader conversions, by keeping only the resource bindings used by each shader.
 - Improve performance of creating pipelines with large pipeline layouts from previously converted shaders.
 - Improve performance of creating pipelines with large vertex or tessellation shaders, by reflecting the interface variables of each shader only once.
+- Improve performance of occlusion queries ended in many render passes, by accumulating their results only when they are needed.
 
 
 
