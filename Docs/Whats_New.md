@@ -34,6 +34,7 @@ Released TBD
 - Fix buffer sizes written to the wrong array element by descriptor updates with a non-zero `dstArrayElement` when using Metal argument buffers.
 - Fix 2D array views of 3D images recreating their `MTLTexture` on every use and releasing it while a command buffer still uses it.
 - Reduce the memory used by cached shader conversions, by keeping only the resource bindings used by each shader.
+- Improve performance of creating pipelines with large pipeline layouts from previously converted shaders.
 
 
 
