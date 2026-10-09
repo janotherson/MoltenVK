@@ -35,6 +35,7 @@ Released TBD
 - Fix 2D array views of 3D images recreating their `MTLTexture` on every use and releasing it while a command buffer still uses it.
 - Reduce the memory used by cached shader conversions, by keeping only the resource bindings used by each shader.
 - Improve performance of creating pipelines with large pipeline layouts from previously converted shaders.
+- Improve performance of creating pipelines with large vertex or tessellation shaders, by reflecting the interface variables of each shader only once.
 
 
 
