@@ -30,6 +30,7 @@ Released TBD
 - Fix leak of the `MTLBuffer` of a host-coherent `VkDeviceMemory` that also holds a `MTLTexture`.
 - Fix pipeline cache matching incompatible shaders when the only difference was in dynamic buffer offset usage.
 - Fix GPU address faults when a swapchain image is accessed through a descriptor set while using a residency set.
+- Fix descriptor set argument buffers not being rebound after `vkCmdClearAttachments()` or an internal compute command replaced their Metal buffer binding.
 
 
 
