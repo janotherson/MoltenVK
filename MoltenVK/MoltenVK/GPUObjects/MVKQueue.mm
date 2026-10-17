@@ -577,8 +577,7 @@ void MVKQueueCommandBufferSubmission::finish() {
 		// After GPU completion, trim temp buffer pools periodically before signaling semaphores/fences
 		uint32_t trimInterval = getMVKConfig().trimCommandPoolInterval;
 		if (trimInterval > 0) {
-			static std::atomic<uint32_t> s_completionCount{0};
-			uint32_t count = s_completionCount.fetch_add(1, std::memory_order_relaxed) + 1;
+			uint32_t count = _device->incrementTrimCompletionCount();
 			if (count % trimInterval == 0) {
 				_device->trimCommandPoolBuffers();
 			}

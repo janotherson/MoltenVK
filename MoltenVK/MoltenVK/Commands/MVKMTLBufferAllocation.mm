@@ -59,6 +59,7 @@ size_t MVKMTLBufferAllocationPool::allocatePage() {
     page.activeCount = 0;
     page.nextUnallocatedSlot = 0;
     page.freeSlices.clear();
+    _dirtyFlag = true;
 
     return targetIdx;
 }
@@ -156,6 +157,7 @@ void MVKMTLBufferAllocationPool::returnAllocationUnlocked(MVKMTLBufferAllocation
                 if (page.mtlBuffer != nil) {
                     [page.mtlBuffer setPurgeableState: MTLPurgeableStateVolatile];
                 }
+                _dirtyFlag = true;
             }
             page.freeSlices.push_back(ba);
             return;
@@ -240,7 +242,7 @@ MVKMTLBufferAllocationPool::~MVKMTLBufferAllocationPool() {
 }
 
 void MVKMTLBufferAllocationPool::trimUnlocked() {
-    if (_mtlBuffers.empty()) return;
+    if (_mtlBuffers.empty() || !_dirtyFlag) return;
 
     MVKSmallVector<id<MTLBuffer>, 16> buffersToRemoveResidency;
     for (size_t i = 0; i < _mtlBuffers.size(); ++i) {
@@ -275,6 +277,8 @@ void MVKMTLBufferAllocationPool::trimUnlocked() {
         delete _freeAllocationHandles.back();
         _freeAllocationHandles.pop_back();
     }
+
+    _dirtyFlag = false;
 }
 
 void MVKMTLBufferAllocationPool::trim() {

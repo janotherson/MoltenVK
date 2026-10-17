@@ -696,6 +696,11 @@ public:
 	/** Trim all command pool buffer allocators, releasing empty MTLBuffers. */
 	void trimCommandPoolBuffers();
 
+	/** Increment trim completion counter (called by completion handlers). Returns new count. */
+	uint32_t incrementTrimCompletionCount() {
+		return _trimCompletionCount.fetch_add(1, std::memory_order_relaxed) + 1;
+	}
+
 	/** Block the current thread until all queues in this device are idle. */
 	VkResult waitIdle();
 	
@@ -1122,6 +1127,7 @@ protected:
 	MVKSmallVector<MVKVisibilityBuffer> _visibilityBuffers;
 	MVKLiveResourceSet _liveResources;
 	MVKSmallVector<MVKCommandPool*> _commandPools;
+	std::atomic<uint32_t> _trimCompletionCount{0};
 
 	/**
 	 * LOCK ORDERING

@@ -135,6 +135,7 @@ protected:
     MVKSmallVector<MTLBufferPage, 16> _mtlBuffers;
     MVKSmallVector<MVKMTLBufferAllocation*, 64> _freeAllocationHandles;
     bool _isThreadSafe;
+    bool _dirtyFlag = false;
 };
 
 
