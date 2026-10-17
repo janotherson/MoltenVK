@@ -31,52 +31,112 @@ void MVKMTLBufferAllocation::returnToPool() { _pool->returnAllocation(this); }
 #pragma mark -
 #pragma mark MVKMTLBufferAllocationPool
 
-MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::newObject() {
-    // If we're at the end of the current MTLBuffer, add a new one.
-    if (_nextOffset >= _mtlBufferLength) { addMTLBuffer(); }
+// Allocate a new MTLBuffer page in the lowest available slot or append a new page slot
+size_t MVKMTLBufferAllocationPool::allocatePage() {
+    size_t targetIdx = _mtlBuffers.size();
+    for (size_t i = 0; i < _mtlBuffers.size(); ++i) {
+        if (_mtlBuffers[i].mtlBuffer == nil) {
+            targetIdx = i;
+            break;
+        }
+    }
+    if (targetIdx == _mtlBuffers.size()) {
+        _mtlBuffers.emplace_back();
+    }
 
-    // Extract and return the next allocation from the current buffer,
-    // which is always at _currentBufferIndex, and advance the offset
-    // of future allocation to beyond this allocation.
-    NSUInteger offset = _nextOffset;
-    _nextOffset += _allocationLength;
-    return new MVKMTLBufferAllocation(this, _mtlBuffers[_currentBufferIndex].mtlBuffer, offset, _allocationLength, _currentBufferIndex);
-}
-
-// Adds a new MTLBuffer to the buffer pool and resets the next offset to the start of it.
-// Always appends to _mtlBuffers — nil slots from trim are NOT reused here because
-// free-list allocation objects may still reference those slots by _poolIndex.
-// Reusing a nil slot would cause those allocations to silently skip reassignment
-// (the nil check in acquireAllocationUnlocked would pass) and use stale offsets
-// into the new buffer, resulting in corrupted data.
-void MVKMTLBufferAllocationPool::addMTLBuffer() {
     MTLResourceOptions mbOpts = (_mtlStorageMode << MTLResourceStorageModeShift)
                               | MTLResourceCPUCacheModeDefaultCache;
     id<MTLBuffer> newBuffer = [getMTLDevice() newBufferWithLength: _mtlBufferLength
                                                           options: mbOpts];
     MVKAssert(newBuffer, "Could not allocate MTLBuffer of length %lu", (unsigned long)_mtlBufferLength);
-    if (!newBuffer) { return; }
-    _mtlBuffers.push_back({ newBuffer, 0 });
+    if (!newBuffer) { return _mtlBuffers.size(); }
+
     getDevice()->makeResident(newBuffer);
-    _nextOffset = 0;
-    _currentBufferIndex = _mtlBuffers.size() - 1;
+
+    auto& page = _mtlBuffers[targetIdx];
+    page.mtlBuffer = newBuffer;
+    page.totalSlots = (uint32_t)(_mtlBufferLength / _allocationLength);
+    page.activeCount = 0;
+    page.nextUnallocatedSlot = 0;
+    page.freeSlices.clear();
+
+    return targetIdx;
 }
 
-MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::acquireAllocationUnlocked() {
-    MVKMTLBufferAllocation* ba = acquireObject();
-
-    // If backing buffer was released by trim, reassign to a live buffer
-    if (ba->_poolIndex >= _mtlBuffers.size() ||
-        _mtlBuffers[ba->_poolIndex].mtlBuffer == nil) {
-        reassignAllocation(ba);
+// Pop an allocation slice from the specified page
+MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::popSliceFromPage(size_t pageIndex) {
+    auto& page = _mtlBuffers[pageIndex];
+    MVKMTLBufferAllocation* ba = nullptr;
+    if (!page.freeSlices.empty()) {
+        ba = page.freeSlices.back();
+        page.freeSlices.pop_back();
+        ba->_mtlBuffer = page.mtlBuffer;
+    } else if (page.nextUnallocatedSlot < page.totalSlots) {
+        uint32_t slot = page.nextUnallocatedSlot++;
+        NSUInteger offset = (NSUInteger)slot * _allocationLength;
+        if (!_freeAllocationHandles.empty()) {
+            ba = _freeAllocationHandles.back();
+            _freeAllocationHandles.pop_back();
+            ba->_mtlBuffer = page.mtlBuffer;
+            ba->_offset = offset;
+            ba->_length = _allocationLength;
+            ba->_pool = this;
+            ba->_poolIndex = pageIndex;
+        } else {
+            ba = new MVKMTLBufferAllocation(this, page.mtlBuffer, offset, _allocationLength, pageIndex);
+        }
+    } else {
+        return nullptr;
     }
 
-    if (ba->_poolIndex < _mtlBuffers.size()) {
-        if (!_mtlBuffers[ba->_poolIndex].allocationCount++) {
-            [ba->_mtlBuffer setPurgeableState: MTLPurgeableStateNonVolatile];
+    if (!page.activeCount++) {
+        if ([page.mtlBuffer setPurgeableState: MTLPurgeableStateNonVolatile] == MTLPurgeableStateEmpty) {
+            getDevice()->removeResidency(page.mtlBuffer);
+            [page.mtlBuffer release];
+            MTLResourceOptions mbOpts = (_mtlStorageMode << MTLResourceStorageModeShift)
+                                      | MTLResourceCPUCacheModeDefaultCache;
+            page.mtlBuffer = [getMTLDevice() newBufferWithLength: _mtlBufferLength options: mbOpts];
+            if (!page.mtlBuffer) {
+                page.activeCount = 0;
+                page.totalSlots = 0;
+                page.nextUnallocatedSlot = 0;
+                for (auto* slice : page.freeSlices) {
+                    slice->_mtlBuffer = nil;
+                    slice->_poolIndex = std::numeric_limits<uint64_t>::max();
+                    _freeAllocationHandles.push_back(slice);
+                }
+                page.freeSlices.clear();
+                ba->_mtlBuffer = nil;
+                ba->_poolIndex = std::numeric_limits<uint64_t>::max();
+                _freeAllocationHandles.push_back(ba);
+                return nullptr;
+            }
+            getDevice()->makeResident(page.mtlBuffer);
+            ba->_mtlBuffer = page.mtlBuffer;
+            for (auto* slice : page.freeSlices) {
+                slice->_mtlBuffer = page.mtlBuffer;
+            }
         }
     }
     return ba;
+}
+
+MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::acquireAllocationUnlocked() {
+    // Lowest-Index First (Bin-Packing): always pack allocations into the lowest-index active page
+    for (size_t i = 0; i < _mtlBuffers.size(); ++i) {
+        if (_mtlBuffers[i].mtlBuffer != nil && _mtlBuffers[i].activeCount < _mtlBuffers[i].totalSlots) {
+            MVKMTLBufferAllocation* ba = popSliceFromPage(i);
+            if (ba) { return ba; }
+        }
+    }
+
+    // No existing page has room; allocate a new page
+    size_t newPageIdx = allocatePage();
+    if (newPageIdx < _mtlBuffers.size()) {
+        return popSliceFromPage(newPageIdx);
+    }
+
+    return nullptr;
 }
 
 MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::acquireAllocation() {
@@ -89,23 +149,23 @@ MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::acquireAllocation() {
 }
 
 void MVKMTLBufferAllocationPool::returnAllocationUnlocked(MVKMTLBufferAllocation* ba) {
-    // If backing buffer was already released by trim, just return to free list
-    if (ba->_poolIndex < _mtlBuffers.size() &&
-        _mtlBuffers[ba->_poolIndex].mtlBuffer == nil) {
-        MVKAssert(_mtlBuffers[ba->_poolIndex].allocationCount == 0,
-                  "Returning allocation whose backing buffer was trimmed while still marked active");
-        returnObject(ba);
-        return;
-    }
-
     if (ba->_poolIndex < _mtlBuffers.size()) {
-        if (!--_mtlBuffers[ba->_poolIndex].allocationCount) {
-            if (_mtlBuffers[ba->_poolIndex].mtlBuffer != nil) {
-                [_mtlBuffers[ba->_poolIndex].mtlBuffer setPurgeableState: MTLPurgeableStateVolatile];
+        auto& page = _mtlBuffers[ba->_poolIndex];
+        if (page.activeCount > 0) {
+            if (!--page.activeCount) {
+                if (page.mtlBuffer != nil) {
+                    [page.mtlBuffer setPurgeableState: MTLPurgeableStateVolatile];
+                }
             }
+            page.freeSlices.push_back(ba);
+            return;
         }
     }
-    returnObject(ba);
+
+    // Backing page was trimmed or released
+    ba->_mtlBuffer = nil;
+    ba->_poolIndex = std::numeric_limits<uint64_t>::max();
+    _freeAllocationHandles.push_back(ba);
 }
 
 void MVKMTLBufferAllocationPool::returnAllocation(MVKMTLBufferAllocation* ba) {
@@ -117,17 +177,30 @@ void MVKMTLBufferAllocationPool::returnAllocation(MVKMTLBufferAllocation* ba) {
     }
 }
 
+void MVKMTLBufferAllocationPool::returnAllocationsUnlocked(MVKMTLBufferAllocation** allocations, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        returnAllocationUnlocked(allocations[i]);
+    }
+}
+
+void MVKMTLBufferAllocationPool::returnAllocations(MVKMTLBufferAllocation** allocations, size_t count) {
+    if (count == 0) return;
+    if (_isThreadSafe) {
+        std::lock_guard<std::mutex> lock(_lock);
+        returnAllocationsUnlocked(allocations, count);
+    } else {
+        returnAllocationsUnlocked(allocations, count);
+    }
+}
+
 MVKMTLBufferAllocationPool::MVKMTLBufferAllocationPool(MVKDevice* device, NSUInteger allocationLength, bool makeThreadSafe,
 													   bool isDedicated, MTLStorageMode mtlStorageMode) :
-	MVKObjectPool<MVKMTLBufferAllocation>(true),
-	MVKDeviceTrackingMixin(device) {
+	MVKBaseDeviceObject(device),
+	_allocationLength(allocationLength),
+	_mtlStorageMode(mtlStorageMode),
+	_isThreadSafe(makeThreadSafe) {
 
-    _allocationLength = allocationLength;
-	_isThreadSafe = makeThreadSafe;
     _mtlBufferLength = _allocationLength * (isDedicated ? 1 : calcMTLBufferAllocationCount());
-    _mtlStorageMode = mtlStorageMode;
-    _nextOffset = _mtlBufferLength;     // Force a MTLBuffer to be added on first access
-    _currentBufferIndex = std::numeric_limits<uint64_t>::max();  // sentinel: no buffer yet
 }
 
 // Returns the number of regions to allocate per MTLBuffer, as determined from the allocation size.
@@ -141,45 +214,66 @@ uint32_t MVKMTLBufferAllocationPool::calcMTLBufferAllocationCount() {
 }
 
 MVKMTLBufferAllocationPool::~MVKMTLBufferAllocationPool() {
-    for (uint32_t bufferIndex = 0; bufferIndex < _mtlBuffers.size(); ++bufferIndex) {
-        if (_mtlBuffers[bufferIndex].mtlBuffer) {
-            getDevice()->removeResidency(_mtlBuffers[bufferIndex].mtlBuffer);
-            [_mtlBuffers[bufferIndex].mtlBuffer release];
+    MVKSmallVector<id<MTLBuffer>, 16> bufsToRemove;
+    for (auto& page : _mtlBuffers) {
+        if (page.mtlBuffer) {
+            bufsToRemove.push_back(page.mtlBuffer);
         }
+        for (auto* ba : page.freeSlices) {
+            delete ba;
+        }
+        page.freeSlices.clear();
     }
     _mtlBuffers.clear();
-}
 
-void MVKMTLBufferAllocationPool::reassignAllocation(MVKMTLBufferAllocation* ba) {
-    if (_nextOffset >= _mtlBufferLength) { addMTLBuffer(); }
+    if (!bufsToRemove.empty()) {
+        getDevice()->removeResidencies(bufsToRemove.data(), bufsToRemove.size());
+        for (id<MTLBuffer> buf : bufsToRemove) {
+            [buf release];
+        }
+    }
 
-    MVKAssert(_mtlBuffers[_currentBufferIndex].mtlBuffer != nil,
-              "reassignAllocation: target buffer is nil");
-
-    ba->_poolIndex = _currentBufferIndex;
-    ba->_mtlBuffer = _mtlBuffers[_currentBufferIndex].mtlBuffer;
-    ba->_offset = _nextOffset;
-    _nextOffset += _allocationLength;
-
-    MVKAssert(ba->_mtlBuffer != nil,
-              "reassignAllocation: result mtlBuffer is nil");
+    for (auto* ba : _freeAllocationHandles) {
+        delete ba;
+    }
+    _freeAllocationHandles.clear();
 }
 
 void MVKMTLBufferAllocationPool::trimUnlocked() {
     if (_mtlBuffers.empty()) return;
 
-    bool currentIsPartial = (_nextOffset > 0 && _nextOffset < _mtlBufferLength);
+    MVKSmallVector<id<MTLBuffer>, 16> buffersToRemoveResidency;
+    for (size_t i = 0; i < _mtlBuffers.size(); ++i) {
+        auto& page = _mtlBuffers[i];
+        if (page.mtlBuffer == nil) continue;
+        if (page.activeCount > 0) continue;
 
-    for (uint64_t i = 0; i < _mtlBuffers.size(); i++) {
-        auto& tracker = _mtlBuffers[i];
+        // Reclaim all free slices of this page back to handle cache
+        for (auto* ba : page.freeSlices) {
+            ba->_mtlBuffer = nil;
+            ba->_poolIndex = std::numeric_limits<uint64_t>::max();
+            _freeAllocationHandles.push_back(ba);
+        }
+        page.freeSlices.clear();
 
-        if (tracker.mtlBuffer == nil) continue;       // Already released
-        if (tracker.allocationCount > 0) continue;     // Still in use
-        if (i == _currentBufferIndex && currentIsPartial) continue; // Current working buffer
+        buffersToRemoveResidency.push_back(page.mtlBuffer);
+        page.mtlBuffer = nil;
+        page.totalSlots = 0;
+        page.nextUnallocatedSlot = 0;
+    }
 
-        getDevice()->removeResidency(tracker.mtlBuffer);
-        [tracker.mtlBuffer release];
-        tracker.mtlBuffer = nil;
+    if (!buffersToRemoveResidency.empty()) {
+        getDevice()->removeResidencies(buffersToRemoveResidency.data(), buffersToRemoveResidency.size());
+        for (id<MTLBuffer> buf : buffersToRemoveResidency) {
+            [buf release];
+        }
+    }
+
+    // Shrink excess free handles
+    uint32_t maxCachedHandles = 2 * calcMTLBufferAllocationCount();
+    while (_freeAllocationHandles.size() > maxCachedHandles) {
+        delete _freeAllocationHandles.back();
+        _freeAllocationHandles.pop_back();
     }
 }
 
@@ -190,32 +284,6 @@ void MVKMTLBufferAllocationPool::trim() {
     } else {
         trimUnlocked();
     }
-}
-
-MVKMTLBufferAllocationPool::PoolStats MVKMTLBufferAllocationPool::getStats() {
-    if (_isThreadSafe) {
-        std::lock_guard<std::mutex> lock(_lock);
-        return getStatsUnlocked();
-    }
-    return getStatsUnlocked();
-}
-
-MVKMTLBufferAllocationPool::PoolStats MVKMTLBufferAllocationPool::getStatsUnlocked() {
-    PoolStats stats;
-    for (auto& tracker : _mtlBuffers) {
-        stats.totalMTLBuffers++;
-        stats.totalBytes += _mtlBufferLength;
-        if (tracker.mtlBuffer == nil) {
-            stats.releasedSlots++;
-            stats.releasedBytes += _mtlBufferLength;
-        } else if (tracker.allocationCount > 0) {
-            stats.activeMTLBuffers++;
-            stats.activeBytes += _mtlBufferLength;
-        } else {
-            stats.emptyMTLBuffers++;
-        }
-    }
-    return stats;
 }
 
 
@@ -235,7 +303,6 @@ MVKMTLBufferAllocation* MVKMTLBufferAllocator::acquireMTLBufferRegion(NSUInteger
 
 MVKMTLBufferAllocator::MVKMTLBufferAllocator(MVKDevice* device, NSUInteger maxRegionLength, bool makeThreadSafe, bool isDedicated, MTLStorageMode mtlStorageMode) : MVKBaseDeviceObject(device) {
 	_maxAllocationLength = std::max<NSUInteger>(maxRegionLength, getMetalFeatures().mtlBufferAlignment);
-	_isThreadSafe = makeThreadSafe;
 
     // Convert max length to the next power-of-two exponent
     NSUInteger maxP2Exp = mvkPowerOfTwoExponent(_maxAllocationLength);
@@ -257,19 +324,5 @@ void MVKMTLBufferAllocator::trim() {
     for (auto* pool : _regionPools) {
         pool->trim();
     }
-}
-
-MVKMTLBufferAllocator::AllocatorStats MVKMTLBufferAllocator::getStats() {
-    AllocatorStats stats;
-    for (auto* pool : _regionPools) {
-        auto ps = pool->getStats();
-        stats.totalMTLBuffers += ps.totalMTLBuffers;
-        stats.activeMTLBuffers += ps.activeMTLBuffers;
-        stats.releasedSlots += ps.releasedSlots;
-        stats.totalBytes += ps.totalBytes;
-        stats.activeBytes += ps.activeBytes;
-        stats.releasedBytes += ps.releasedBytes;
-    }
-    return stats;
 }
 

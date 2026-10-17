@@ -999,10 +999,18 @@ public:
 
 #if !MVK_XCODE_16
 	void removeResidency(id allocation) {}
+	void removeResidencies(const id<MTLBuffer>* allocations, size_t count) {}
 #else
 	void removeResidency(id<MTLAllocation> allocation) {
 		@synchronized(_residencySet) {
 			[_residencySet removeAllocation:allocation];
+			[_residencySet commit];
+		}
+	}
+	void removeResidencies(const id<MTLBuffer>* allocations, size_t count) {
+		if (count == 0 || !_residencySet) return;
+		@synchronized(_residencySet) {
+			[_residencySet removeAllocations:(const id<MTLAllocation>*)allocations count:count];
 			[_residencySet commit];
 		}
 	}
@@ -1121,24 +1129,17 @@ protected:
 	 * Critical section ordering to prevent deadlock:
 	 *
 	 * 1. MVKDevice::_rezLock
-	 *    - Must be acquired before MVKCommandEncodingPool::_lock
-	 *    - Must be acquired before MVKMTLBufferAllocationPool::_lock
-	 *    - Used for device-level operations (command pool registry)
+	 *    - Protects device-level resource tracking and _commandPools registry
+	 *    - Never held while acquiring MVKCommandEncodingPool::_lock or MVKMTLBufferAllocationPool::_lock
+	 *      (trimCommandPoolBuffers() snapshots _commandPools and increments _trimCount under _rezLock,
+	 *      then releases _rezLock before trimming each pool)
 	 *
 	 * 2. MVKCommandEncodingPool::_lock
-	 *    - Protects allocator pool state
-	 *    - Must be acquired before MVKMTLBufferAllocationPool::_lock
+	 *    - Protects encoding pool state and transfer resources
+	 *    - Acquired before MVKMTLBufferAllocationPool::_lock during trimBufferAllocators()
 	 *
 	 * 3. MVKMTLBufferAllocationPool::_lock
-	 *    - Protects individual allocator state
-	 *    - Fine-grained locking for performance
-	 *
-	 * Deadlock analysis:
-	 *   - acquireAllocation() / returnAllocation() take pool _lock only
-	 *   - trimCommandPoolBuffers() takes _rezLock → encoding _lock → pool _lock
-	 *   - No reverse path exists → deadlock impossible
-	 *
-	 * Only trimCommandPoolBuffers() acquires all three locks.
+	 *    - Protects individual buffer allocation pool state
 	 */
 	std::mutex _rezLock;
 	std::mutex _sem4Lock;
