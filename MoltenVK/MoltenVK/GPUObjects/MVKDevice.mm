@@ -4583,19 +4583,13 @@ void MVKDevice::trimCommandPoolBuffers() {
 		std::lock_guard<std::mutex> lock(_rezLock);
 		pools.reserve(_commandPools.size());
 		for (auto* pool : _commandPools) {
+			pool->_trimCount.fetch_add(1, std::memory_order_relaxed);
 			pools.push_back(pool);
 		}
 	}
 	for (auto* pool : pools) {
-		// Verify pool still in _commandPools under lock before trimming
-		bool valid = false;
-		{
-			std::lock_guard<std::mutex> lock(_rezLock);
-			valid = mvkContains(_commandPools, pool);
-		}
-		if (valid) {
-			pool->trimBufferAllocators();
-		}
+		pool->trimBufferAllocators();
+		pool->_trimCount.fetch_sub(1, std::memory_order_release);
 	}
 }
 

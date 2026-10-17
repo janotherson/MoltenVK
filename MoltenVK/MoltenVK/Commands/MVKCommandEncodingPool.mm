@@ -92,12 +92,54 @@ id<MTLDepthStencilState> MVKCommandEncodingPool::getMTLDepthStencilState(MVKMTLD
 	MVK_ENC_REZ_ACCESS(_mtlDepthStencilStates[dsData], newMTLDepthStencilState(dsData));
 }
 
-MVKImage* MVKCommandEncodingPool::getTransferMVKImage(MVKImageDescriptorData& imgData) {
-	MVK_ENC_REZ_ACCESS(_transferImages[imgData], newMVKImage(imgData));
+MVKImage* MVKCommandEncodingPool::getTransferMVKImage(MVKImageDescriptorData& imgData, id<MTLCommandBuffer> mtlCmdBuff) {
+    lock_guard<mutex> lock(_lock);
+    auto& entry = _transferImages[imgData];
+    if (!entry.image) {
+        entry.image = _commandPool->getDevice()->getCommandResourceFactory()->newMVKImage(imgData);
+    }
+    if (mtlCmdBuff) {
+        entry.inFlightCount++;
+        MVKImageDescriptorData key = imgData;
+        MVKCommandPool* cmdPool = _commandPool;
+        cmdPool->_trimCount.fetch_add(1, std::memory_order_relaxed);
+        [mtlCmdBuff addCompletedHandler:^(id<MTLCommandBuffer> mcb) { @autoreleasepool {
+            {
+                lock_guard<mutex> innerLock(_lock);
+                auto it = _transferImages.find(key);
+                if (it != _transferImages.end() && it->second.inFlightCount > 0) {
+                    it->second.inFlightCount--;
+                }
+            }
+            cmdPool->_trimCount.fetch_sub(1, std::memory_order_release);
+        }}];
+    }
+    return entry.image;
 }
 
-MVKBuffer* MVKCommandEncodingPool::getTransferMVKBuffer(MVKBufferDescriptorData& buffData) {
-	MVK_ENC_REZ_ACCESS(_transferBuffers[buffData], newMVKBuffer(buffData, _transferBufferMemory[buffData]));
+MVKBuffer* MVKCommandEncodingPool::getTransferMVKBuffer(MVKBufferDescriptorData& buffData, id<MTLCommandBuffer> mtlCmdBuff) {
+    lock_guard<mutex> lock(_lock);
+    auto& entry = _transferBuffers[buffData];
+    if (!entry.buffer) {
+        entry.buffer = _commandPool->getDevice()->getCommandResourceFactory()->newMVKBuffer(buffData, entry.memory);
+    }
+    if (mtlCmdBuff) {
+        entry.inFlightCount++;
+        MVKBufferDescriptorData key = buffData;
+        MVKCommandPool* cmdPool = _commandPool;
+        cmdPool->_trimCount.fetch_add(1, std::memory_order_relaxed);
+        [mtlCmdBuff addCompletedHandler:^(id<MTLCommandBuffer> mcb) { @autoreleasepool {
+            {
+                lock_guard<mutex> innerLock(_lock);
+                auto it = _transferBuffers.find(key);
+                if (it != _transferBuffers.end() && it->second.inFlightCount > 0) {
+                    it->second.inFlightCount--;
+                }
+            }
+            cmdPool->_trimCount.fetch_sub(1, std::memory_order_release);
+        }}];
+    }
+    return entry.buffer;
 }
 
 id<MTLComputePipelineState> MVKCommandEncodingPool::getCmdCopyBufferBytesMTLComputePipelineState() {
@@ -178,10 +220,44 @@ void MVKCommandEncodingPool::clear() {
 }
 
 void MVKCommandEncodingPool::trimBufferAllocators() {
-	lock_guard<mutex> lock(_lock);
-	_mtlBufferAllocator.trim();
-	_privateMtlBufferAllocator.trim();
-	_dedicatedMtlBufferAllocator.trim();
+	@autoreleasepool {
+		MVKSmallVector<MVKBuffer*, 16> buffersToDestroy;
+		MVKSmallVector<MVKDeviceMemory*, 16> memoriesToFree;
+		MVKSmallVector<MVKImage*, 16> imagesToDestroy;
+
+		{
+			lock_guard<mutex> lock(_lock);
+			_mtlBufferAllocator.trim();
+			_privateMtlBufferAllocator.trim();
+			_dedicatedMtlBufferAllocator.trim();
+
+			// Reclaim transfer buffers that are not currently in-flight on the GPU
+			for (auto it = _transferBuffers.begin(); it != _transferBuffers.end(); ) {
+				if (it->second.inFlightCount == 0) {
+					if (it->second.buffer) { buffersToDestroy.push_back(it->second.buffer); }
+					if (it->second.memory) { memoriesToFree.push_back(it->second.memory); }
+					it = _transferBuffers.erase(it);
+				} else {
+					++it;
+				}
+			}
+
+			// Reclaim transfer images that are not currently in-flight on the GPU
+			for (auto it = _transferImages.begin(); it != _transferImages.end(); ) {
+				if (it->second.inFlightCount == 0) {
+					if (it->second.image) { imagesToDestroy.push_back(it->second.image); }
+					it = _transferImages.erase(it);
+				} else {
+					++it;
+				}
+			}
+		}
+
+		MVKDevice* mvkDev = _commandPool->getDevice();
+		for (auto* buf : buffersToDestroy) { mvkDev->destroyBuffer(buf, nullptr); }
+		for (auto* mem : memoriesToFree) { mvkDev->freeMemory(mem, nullptr); }
+		for (auto* img : imagesToDestroy) { mvkDev->destroyImage(img, nullptr); }
+	}
 }
 
 
@@ -210,14 +286,16 @@ void MVKCommandEncodingPool::destroyMetalResources() {
     for (auto& pair : _mtlDepthStencilStates) { [pair.second release]; }
     _mtlDepthStencilStates.clear();
 
-    for (auto& pair : _transferImages) { mvkDev->destroyImage(pair.second, nullptr); }
+    for (auto& pair : _transferImages) {
+        if (pair.second.image) { mvkDev->destroyImage(pair.second.image, nullptr); }
+    }
     _transferImages.clear();
 
-    for (auto& pair : _transferBuffers) { mvkDev->destroyBuffer(pair.second, nullptr); }
+    for (auto& pair : _transferBuffers) {
+        if (pair.second.buffer) { mvkDev->destroyBuffer(pair.second.buffer, nullptr); }
+        if (pair.second.memory) { mvkDev->freeMemory(pair.second.memory, nullptr); }
+    }
     _transferBuffers.clear();
-
-    for (auto& pair : _transferBufferMemory) { mvkDev->freeMemory(pair.second, nullptr); }
-    _transferBufferMemory.clear();
 
     [_cmdClearDepthAndStencilDepthStencilState release];
     _cmdClearDepthAndStencilDepthStencilState = nil;
