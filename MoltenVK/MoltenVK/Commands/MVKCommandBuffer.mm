@@ -465,6 +465,7 @@ void MVKCommandEncoder::encodeCommandsImpl(MVKCommand* command) {
 void MVKCommandEncoder::endEncoding() {
 	endCurrentMetalEncoding();
 	finishQueries();
+	finishTempMTLBuffers();
 }
 
 void MVKCommandEncoder::encodeSecondary(MVKCommandBuffer* secondaryCmdBuffer) {
@@ -1185,7 +1186,9 @@ void MVKCommandEncoder::setComputeBytes(id<MTLComputeCommandEncoder> mtlEncoder,
 // Return the MTLBuffer allocation to the pool once the command buffer is done with it
 const MVKMTLBufferAllocation* MVKCommandEncoder::getTempMTLBuffer(NSUInteger length, bool isPrivate, bool isDedicated) {
     MVKMTLBufferAllocation* mtlBuffAlloc = getCommandEncodingPool()->acquireMTLBufferAllocation(length, isPrivate, isDedicated);
-    [_mtlCmdBuffer addCompletedHandler: ^(id<MTLCommandBuffer> mcb) { mtlBuffAlloc->returnToPool(); }];
+    if (mtlBuffAlloc) {
+        _tempMTLBufferAllocations.push_back(mtlBuffAlloc);
+    }
     return mtlBuffAlloc;
 }
 
@@ -1338,6 +1341,48 @@ void MVKCommandEncoder::finishQueries() {
     _pActivatedQueries = nullptr;
 }
 
+// Register a single completion handler to return all temporary MTLBuffer allocations in a batch
+void MVKCommandEncoder::finishTempMTLBuffers() {
+    if (_tempMTLBufferAllocations.empty()) { return; }
+    if (!_mtlCmdBuffer) {
+        clearTempMTLBuffers();
+        return;
+    }
+
+    auto* pAllocations = new MVKSmallVector<MVKMTLBufferAllocation*, 64>(std::move(_tempMTLBufferAllocations));
+    _tempMTLBufferAllocations.clear();
+
+    MVKCommandPool* cmdPool = _cmdBuffer->getCommandPool();
+    cmdPool->_trimCount.fetch_add(1, std::memory_order_relaxed);
+
+    [_mtlCmdBuffer addCompletedHandler: ^(id<MTLCommandBuffer> mcb) {
+        @autoreleasepool {
+            std::sort(pAllocations->data(), pAllocations->data() + pAllocations->size(), [](MVKMTLBufferAllocation* a, MVKMTLBufferAllocation* b) {
+                return a->getPool() < b->getPool();
+            });
+            size_t total = pAllocations->size();
+            size_t i = 0;
+            while (i < total) {
+                auto* pool = (*pAllocations)[i]->getPool();
+                size_t start = i;
+                while (i < total && (*pAllocations)[i]->getPool() == pool) {
+                    i++;
+                }
+                pool->returnAllocations(pAllocations->data() + start, i - start);
+            }
+            delete pAllocations;
+        }
+        cmdPool->_trimCount.fetch_sub(1, std::memory_order_release);
+    }];
+}
+
+void MVKCommandEncoder::clearTempMTLBuffers() {
+    for (auto* alloc : _tempMTLBufferAllocations) {
+        if (alloc) { alloc->returnToPool(); }
+    }
+    _tempMTLBufferAllocations.clear();
+}
+
 
 #pragma mark Construction
 
@@ -1358,6 +1403,7 @@ MVKCommandEncoder::MVKCommandEncoder(MVKCommandBuffer* cmdBuffer, MVKPrefillMeta
 }
 
 MVKCommandEncoder::~MVKCommandEncoder() {
+	clearTempMTLBuffers();
 	[_mtlRenderEncoder release];
 	[_mtlComputeEncoder release];
 	[_mtlBlitEncoder release];

@@ -86,6 +86,8 @@ MVK_CONFIG_MEMBER(useMetalPrivateAPI,                     VkBool32,             
 MVK_CONFIG_MEMBER_STRING(shaderDumpDir,                   char*,                                    SHADER_DUMP_DIR)
 MVK_CONFIG_MEMBER(shaderLogEstimatedGLSL,                 VkBool32,                                 SHADER_LOG_ESTIMATED_GLSL)
 MVK_CONFIG_MEMBER(liveCheckAllResources,                  VkBool32,                                 LIVE_CHECK_ALL_RESOURCES)
+MVK_CONFIG_MEMBER(trimCommandPoolInterval,                uint32_t,                                 TRIM_COMMAND_POOL_INTERVAL)
+MVK_CONFIG_MEMBER(maxVRAMSizeMB,                          uint32_t,                                 MAX_VRAM_SIZE_MB)
 
 #undef MVK_CONFIG_MEMBER
 #undef MVK_CONFIG_MEMBER_STRING
