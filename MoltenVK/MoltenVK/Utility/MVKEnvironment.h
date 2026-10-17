@@ -353,8 +353,16 @@ void mvkSetConfig(MVKConfiguration& dstMVKConfig, const MVKConfiguration& srcMVK
 
 /**
  * The interval (in completions) at which to trim command pool buffer allocators to reclaim Metal memory.
- * Zero disables this feature. Default is zero (disabled).
+ * Zero disables this feature. Default is 600 completions (~10 seconds at 60 FPS).
  */
 #ifndef MVK_CONFIG_TRIM_COMMAND_POOL_INTERVAL
-#   define MVK_CONFIG_TRIM_COMMAND_POOL_INTERVAL 0
+#   define MVK_CONFIG_TRIM_COMMAND_POOL_INTERVAL 600
+#endif
+
+/**
+ * Clamps the maximum reported GPU VRAM size (and memory budget) in megabytes.
+ * Zero disables clamping (defaults to full system/device memory).
+ */
+#ifndef MVK_CONFIG_MAX_VRAM_SIZE_MB
+#   define MVK_CONFIG_MAX_VRAM_SIZE_MB 0
 #endif
