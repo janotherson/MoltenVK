@@ -85,6 +85,7 @@ id<MTLCommandBuffer> MVKCommandPool::getMTLCommandBuffer(MVKCommandUse cmdUse, u
 void MVKCommandPool::trim() {
 #	define MVK_CMD_TYPE_POOL(cmdType)  _cmd ##cmdType ##Pool.clear();
 #	include "MVKCommandTypePools.def"
+	trimBufferAllocators();
 }
 
 void MVKCommandPool::trimBufferAllocators() {

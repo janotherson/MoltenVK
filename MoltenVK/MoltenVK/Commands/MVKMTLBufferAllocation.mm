@@ -54,6 +54,8 @@ void MVKMTLBufferAllocationPool::addMTLBuffer() {
                               | MTLResourceCPUCacheModeDefaultCache;
     id<MTLBuffer> newBuffer = [getMTLDevice() newBufferWithLength: _mtlBufferLength
                                                           options: mbOpts];
+    MVKAssert(newBuffer, "Could not allocate MTLBuffer of length %lu", (unsigned long)_mtlBufferLength);
+    if (!newBuffer) { return; }
     _mtlBuffers.push_back({ newBuffer, 0 });
     getDevice()->makeResident(newBuffer);
     _nextOffset = 0;
@@ -64,13 +66,15 @@ MVKMTLBufferAllocation* MVKMTLBufferAllocationPool::acquireAllocationUnlocked() 
     MVKMTLBufferAllocation* ba = acquireObject();
 
     // If backing buffer was released by trim, reassign to a live buffer
-    if (ba->_poolIndex < _mtlBuffers.size() &&
+    if (ba->_poolIndex >= _mtlBuffers.size() ||
         _mtlBuffers[ba->_poolIndex].mtlBuffer == nil) {
         reassignAllocation(ba);
     }
 
-    if (!_mtlBuffers[ba->_poolIndex].allocationCount++) {
-        [ba->_mtlBuffer setPurgeableState: MTLPurgeableStateNonVolatile];
+    if (ba->_poolIndex < _mtlBuffers.size()) {
+        if (!_mtlBuffers[ba->_poolIndex].allocationCount++) {
+            [ba->_mtlBuffer setPurgeableState: MTLPurgeableStateNonVolatile];
+        }
     }
     return ba;
 }
@@ -94,8 +98,12 @@ void MVKMTLBufferAllocationPool::returnAllocationUnlocked(MVKMTLBufferAllocation
         return;
     }
 
-    if (!--_mtlBuffers[ba->_poolIndex].allocationCount) {
-        [ba->_mtlBuffer setPurgeableState: MTLPurgeableStateVolatile];
+    if (ba->_poolIndex < _mtlBuffers.size()) {
+        if (!--_mtlBuffers[ba->_poolIndex].allocationCount) {
+            if (_mtlBuffers[ba->_poolIndex].mtlBuffer != nil) {
+                [_mtlBuffers[ba->_poolIndex].mtlBuffer setPurgeableState: MTLPurgeableStateVolatile];
+            }
+        }
     }
     returnObject(ba);
 }

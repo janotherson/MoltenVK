@@ -4564,9 +4564,24 @@ void MVKDevice::unregisterCommandPool(MVKCommandPool* pool) {
 }
 
 void MVKDevice::trimCommandPoolBuffers() {
-	std::lock_guard<std::mutex> lock(_rezLock);
-	for (auto* pool : _commandPools) {
-		pool->trimBufferAllocators();
+	MVKSmallVector<MVKCommandPool*> pools;
+	{
+		std::lock_guard<std::mutex> lock(_rezLock);
+		pools.reserve(_commandPools.size());
+		for (auto* pool : _commandPools) {
+			pools.push_back(pool);
+		}
+	}
+	for (auto* pool : pools) {
+		// Verify pool still in _commandPools under lock before trimming
+		bool valid = false;
+		{
+			std::lock_guard<std::mutex> lock(_rezLock);
+			valid = mvkContains(_commandPools, pool);
+		}
+		if (valid) {
+			pool->trimBufferAllocators();
+		}
 	}
 }
 

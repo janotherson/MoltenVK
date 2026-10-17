@@ -577,9 +577,6 @@ void MVKQueueCommandBufferSubmission::finish() {
 	// If using inline semaphore signaling, do so now.
 	for (auto& ss : _signalSemaphores) { ss.encodeSignal(nil); }
 
-	// If a fence exists, signal it.
-	if (_fence) { _fence->signal(); }
-
 	// After GPU completion, trim temp buffer pools periodically
 	uint32_t trimInterval = getMVKConfig().trimCommandPoolInterval;
 	if (trimInterval > 0) {
@@ -589,6 +586,9 @@ void MVKQueueCommandBufferSubmission::finish() {
 			_device->trimCommandPoolBuffers();
 		}
 	}
+
+	// If a fence exists, signal it.
+	if (_fence) { _fence->signal(); }
 
 	this->destroy();
 }

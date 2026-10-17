@@ -102,5 +102,5 @@ MVK_CONFIG_MEMBER(trimCommandPoolInterval,                uint32_t,             
  * Once  MVKConfiguration and the list above are in agreement, it may be necessary to modify
  * this value if the internal padding has changed as a result of new MVKConfiguration members.
  */
-#define kMVKConfigurationInternalPaddingByteCount  0
+#define kMVKConfigurationInternalPaddingByteCount  8
 
