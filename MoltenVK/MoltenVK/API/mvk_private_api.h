@@ -217,7 +217,6 @@ typedef struct {
 	uint64_t metalCompileTimeout;                                              /**< MVK_CONFIG_METAL_COMPILE_TIMEOUT */
 	VkBool32 performanceTracking;                                              /**< MVK_CONFIG_PERFORMANCE_TRACKING */
 	uint32_t performanceLoggingFrameCount;                                     /**< MVK_CONFIG_PERFORMANCE_LOGGING_FRAME_COUNT */
-	MVKConfigActivityPerformanceLoggingStyle activityPerformanceLoggingStyle;  /**< MVK_CONFIG_ACTIVITY_PERFORMANCE_LOGGING_STYLE */
 	VkBool32 displayWatermark;                                                 /**< MVK_CONFIG_DISPLAY_WATERMARK */
 	VkBool32 specializedQueueFamilies;                                         /**< MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES */
 	VkBool32 switchSystemGPU;                                                  /**< MVK_CONFIG_SWITCH_SYSTEM_GPU */
@@ -236,6 +235,7 @@ typedef struct {
 	VkBool32 preallocateDescriptors;                                           /**< Obsolete, deprecated, and ignored. */
 	VkBool32 useCommandPooling;                                                /**< MVK_CONFIG_USE_COMMAND_POOLING */
 	MVKConfigUseMTLHeap useMTLHeap;                                            /**< MVK_CONFIG_USE_MTLHEAP */
+	MVKConfigActivityPerformanceLoggingStyle activityPerformanceLoggingStyle;  /**< MVK_CONFIG_ACTIVITY_PERFORMANCE_LOGGING_STYLE */
 	uint32_t apiVersionToAdvertise;                                            /**< MVK_CONFIG_API_VERSION_TO_ADVERTISE */
 	MVKConfigAdvertiseExtensions advertiseExtensions;                          /**< MVK_CONFIG_ADVERTISE_EXTENSIONS */
 	VkBool32 resumeLostDevice;                                                 /**< MVK_CONFIG_RESUME_LOST_DEVICE */
@@ -248,6 +248,7 @@ typedef struct {
 	VkBool32 shaderLogEstimatedGLSL;                                           /**< MVK_CONFIG_SHADER_LOG_ESTIMATED_GLSL */
 	VkBool32 liveCheckAllResources;                                            /**< MVK_CONFIG_LIVE_CHECK_ALL_RESOURCES */
 	uint32_t trimCommandPoolInterval;                                           /**< MVK_CONFIG_TRIM_COMMAND_POOL_INTERVAL */
+	uint32_t maxVRAMSizeMB;                                                     /**< MVK_CONFIG_MAX_VRAM_SIZE_MB */
 	VkBool32 logOrphanedDeviceMemory;                                          /**< MVK_CONFIG_LOG_ORPHANED_DEVICE_MEMORY */
 	uint32_t orphanedMemoryLogInterval;                                        /**< MVK_CONFIG_ORPHANED_MEMORY_LOG_INTERVAL */
 } MVKConfiguration;

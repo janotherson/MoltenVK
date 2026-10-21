@@ -125,18 +125,6 @@ static void mvkInstallMetalAllocationTracking(id<MTLDevice> mtlDevice) {
 #else // ! MVK_USE_METAL_PRIVATE_API
 
 static inline void mvkInstallMetalAllocationTracking(id<MTLDevice>) {}
-static inline void mvkLogMetalAllocationStats() {
-	printf("  --- Metal Allocation Tracking (cumulative) ---\n");
-	printf("    Buffers created: %llu (%.2f GB total)\n",
-		   g_metalBufferAllocCount.load(),
-		   g_metalBufferAllocTotal.load() / (1024.0 * 1024.0 * 1024.0));
-	printf("    Textures created: %llu (%.2f GB total)\n",
-		   g_metalTextureAllocCount.load(),
-		   g_metalTextureAllocTotal.load() / (1024.0 * 1024.0 * 1024.0));
-	printf("    Heaps created: %llu (%.2f GB total)\n",
-		   g_metalHeapAllocCount.load(),
-		   g_metalHeapAllocTotal.load() / (1024.0 * 1024.0 * 1024.0));
-}
 
 #endif // MVK_USE_METAL_PRIVATE_API
 
@@ -2465,13 +2453,14 @@ VkResult MVKPhysicalDevice::getMemoryProperties(VkPhysicalDeviceMemoryProperties
 					budgetProps->heapBudget[1] = (VkDeviceSize)mvkGetAvailableMemorySize();
 					budgetProps->heapUsage[1] = (VkDeviceSize)mvkGetUsedMemorySize();
 				}
-				budgetProps->heapBudget[0] = (VkDeviceSize)getRecommendedMaxWorkingSetSize();
 				auto currentAllocatedSize = (VkDeviceSize)getCurrentAllocatedSize();
 				if (budgetProps->heapUsage[1] > currentAllocatedSize) {
 					// mapped memory can't be larger than total memory, so ignore and zero-out
 					budgetProps->heapUsage[1] = 0;
 				}
 				budgetProps->heapUsage[0] = currentAllocatedSize - budgetProps->heapUsage[1];
+
+				budgetProps->heapBudget[0] = std::min(_memoryProperties.memoryHeaps[0].size, (VkDeviceSize)getRecommendedMaxWorkingSetSize());
 				break;
 			}
 			default:
@@ -3563,22 +3552,35 @@ MVK_PUBLIC_SYMBOL MTLStorageMode MVKPhysicalDevice::getMTLStorageModeFromVkMemor
 }
 
 uint64_t MVKPhysicalDevice::getVRAMSize() {
+	uint64_t vramSize;
 	if (_hasUnifiedMemory) {
-		return mvkGetSystemMemorySize();
+		vramSize = mvkGetSystemMemorySize();
 	} else {
 		// There's actually no way to query the total physical VRAM on the device in Metal.
 		// Just default to using the recommended max working set size (i.e. the budget).
-		return getRecommendedMaxWorkingSetSize();
+		vramSize = getRecommendedMaxWorkingSetSize();
 	}
+	uint64_t maxVRAM = (uint64_t)_mvkInstance->getMVKConfig().maxVRAMSizeMB * MEBI;
+	if (maxVRAM > 0 && vramSize > maxVRAM) {
+		vramSize = maxVRAM;
+	}
+	return vramSize;
 }
 
 // If possible, retrieve from the MTLDevice, otherwise from available memory size, or a fixed conservative estimate.
 uint64_t MVKPhysicalDevice::getRecommendedMaxWorkingSetSize() {
+	uint64_t workingSetSize;
 	if ( [_mtlDevice respondsToSelector: @selector(recommendedMaxWorkingSetSize)]) {
-		return _mtlDevice.recommendedMaxWorkingSetSize;
+		workingSetSize = _mtlDevice.recommendedMaxWorkingSetSize;
+	} else {
+		uint64_t freeMem = mvkGetAvailableMemorySize();
+		workingSetSize = freeMem ? freeMem : 256 * MEBI;
 	}
-	uint64_t freeMem = mvkGetAvailableMemorySize();
-	return freeMem ? freeMem : 256 * MEBI;
+	uint64_t maxVRAM = (uint64_t)_mvkInstance->getMVKConfig().maxVRAMSizeMB * MEBI;
+	if (maxVRAM > 0 && workingSetSize > maxVRAM) {
+		workingSetSize = maxVRAM;
+	}
+	return workingSetSize;
 }
 
 // If possible, retrieve from the MTLDevice, otherwise use the current memory used by this process.
@@ -4663,37 +4665,65 @@ void MVKDevice::unregisterCommandPool(MVKCommandPool* pool) {
 }
 
 void MVKDevice::trimCommandPoolBuffers() {
-	std::lock_guard<std::mutex> lock(_rezLock);
-	for (auto* pool : _commandPools) {
+	MVKSmallVector<MVKCommandPool*> pools;
+	{
+		std::lock_guard<std::mutex> lock(_rezLock);
+		pools.reserve(_commandPools.size());
+		for (auto* pool : _commandPools) {
+			pool->_trimCount.fetch_add(1, std::memory_order_relaxed);
+			pools.push_back(pool);
+		}
+	}
+	for (auto* pool : pools) {
 		pool->trimBufferAllocators();
+		pool->_trimCount.fetch_sub(1, std::memory_order_release);
 	}
 }
 
 MVKDeviceMemory* MVKDevice::allocateMemory(const VkMemoryAllocateInfo* pAllocateInfo,
 										   const VkAllocationCallbacks* pAllocator) {
-	MVKDeviceMemory* mvkDevMem = new MVKDeviceMemory(this, pAllocateInfo, pAllocator);
-	if (mvkDevMem->getConfigurationResult() != VK_SUCCESS) {
+	@autoreleasepool {
+		MVKDeviceMemory* mvkDevMem = new MVKDeviceMemory(this, pAllocateInfo, pAllocator);
+		if (mvkDevMem->getConfigurationResult() != VK_SUCCESS) {
+			return mvkDevMem;
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(_rezLock);
+			_deviceMemories.push_back(mvkDevMem);
+		}
+
 		return mvkDevMem;
 	}
-
-	{
-		std::lock_guard<std::mutex> lock(_rezLock);
-		_deviceMemories.push_back(mvkDevMem);
-	}
-
-	return mvkDevMem;
 }
 
 void MVKDevice::freeMemory(MVKDeviceMemory* mvkDevMem,
 						   const VkAllocationCallbacks* pAllocator) {
-	if (!mvkDevMem) { return; }
+	@autoreleasepool {
+		if (!mvkDevMem) { return; }
 
-	{
-		std::lock_guard<std::mutex> lock(_rezLock);
-		mvkRemoveFirstOccurance(_deviceMemories, mvkDevMem);
+		{
+			std::lock_guard<std::mutex> lock(_rezLock);
+			mvkRemoveFirstOccurance(_deviceMemories, mvkDevMem);
+		}
+
+		mvkDevMem->destroy();
 	}
+}
 
-	mvkDevMem->destroy();
+void MVKDevice::logMetalAllocationStats() {
+	if (g_metalBufferAllocCount.load() > 0 || g_metalTextureAllocCount.load() > 0 || g_metalHeapAllocCount.load() > 0) {
+		MVKLogInfo("  --- Metal Allocation Tracking (cumulative) ---");
+		MVKLogInfo("    Buffers created: %llu (%.2f GB total)",
+				   g_metalBufferAllocCount.load(),
+				   g_metalBufferAllocTotal.load() / (1024.0 * 1024.0 * 1024.0));
+		MVKLogInfo("    Textures created: %llu (%.2f GB total)",
+				   g_metalTextureAllocCount.load(),
+				   g_metalTextureAllocTotal.load() / (1024.0 * 1024.0 * 1024.0));
+		MVKLogInfo("    Heaps created: %llu (%.2f GB total)",
+				   g_metalHeapAllocCount.load(),
+				   g_metalHeapAllocTotal.load() / (1024.0 * 1024.0 * 1024.0));
+	}
 }
 
 void MVKDevice::trimOrphanedDeviceMemory() {
@@ -4781,6 +4811,8 @@ void MVKDevice::trimOrphanedDeviceMemory() {
 		MVKLogInfo("  MTLDevice.currentAllocatedSize: %.2f GB",
 				   metalTotal / (1024.0*1024.0*1024.0));
 	}
+	logMetalAllocationStats();
+
 	MVKLogInfo("  VkDeviceMemory: %u blocks (%u heaps %.2f GB, %u buffers %.2f GB)",
 			   devMemCount,
 			   heapCount, heapTotal / (1024.0*1024.0*1024.0),
@@ -4790,6 +4822,39 @@ void MVKDevice::trimOrphanedDeviceMemory() {
 	MVKLogInfo("  Health: %u empty, %u sparse (<10 res, %.2f GB), %u orphaned (%.2f GB)",
 			   heapsEmpty, heapsSparse, heapsSparseBytes / (1024.0*1024.0*1024.0),
 			   orphanedBufferBacked, orphanedBufferBackedBytes / (1024.0*1024.0*1024.0));
+
+	// Driver-level Command Pools & Allocator Telemetry
+	MVKSmallVector<MVKCommandPool*> pools;
+	{
+		std::lock_guard<std::mutex> lock(_rezLock);
+		pools.reserve(_commandPools.size());
+		for (auto* pool : _commandPools) {
+			pools.push_back(pool);
+		}
+	}
+	size_t totalTransferImages = 0;
+	size_t totalTransferBuffers = 0;
+	MVKCommandEncodingPool::AllocatorStats sharedBufStats;
+	for (auto* cp : pools) {
+		auto* encPool = cp->getCommandEncodingPool();
+		totalTransferImages += encPool->getTransferImagesCount();
+		totalTransferBuffers += encPool->getTransferBuffersCount();
+		auto bs = encPool->getMtlBufferAllocatorStats();
+		sharedBufStats.totalMTLBuffers += bs.totalMTLBuffers;
+		sharedBufStats.activeMTLBuffers += bs.activeMTLBuffers;
+		sharedBufStats.emptyMTLBuffers += bs.emptyMTLBuffers;
+		sharedBufStats.releasedSlots += bs.releasedSlots;
+		sharedBufStats.totalBytes += bs.totalBytes;
+		sharedBufStats.activeBytes += bs.activeBytes;
+		sharedBufStats.releasedBytes += bs.releasedBytes;
+	}
+	MVKLogInfo("  Driver Temp Buffers: %u active (%.1f MB), %u standby, %u trimmed (%.1f MB freed) across %zu pools",
+			   sharedBufStats.activeMTLBuffers, sharedBufStats.activeBytes / (1024.0*1024.0),
+			   sharedBufStats.emptyMTLBuffers,
+			   sharedBufStats.releasedSlots, sharedBufStats.releasedBytes / (1024.0*1024.0),
+			   pools.size());
+	MVKLogInfo("  Driver Staging Cache: %zu cached transfer images, %zu cached transfer buffers",
+			   totalTransferImages, totalTransferBuffers);
 }
 
 // Look for an available pre-reserved private data slot and return its address if found.

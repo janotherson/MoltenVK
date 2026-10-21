@@ -717,6 +717,11 @@ public:
 	/** Trim all command pool buffer allocators, releasing empty MTLBuffers. */
 	void trimCommandPoolBuffers();
 
+	/** Increment trim completion counter (called by completion handlers). Returns new count. */
+	uint32_t incrementTrimCompletionCount() {
+		return _trimCompletionCount.fetch_add(1, std::memory_order_relaxed) + 1;
+	}
+
 	/** Block the current thread until all queues in this device are idle. */
 	VkResult waitIdle();
 	
@@ -973,6 +978,9 @@ public:
 	/** Audit and log orphaned device memory blocks (telemetry-only). */
 	void trimOrphanedDeviceMemory();
 
+	/** Log cumulative Metal allocation statistics. */
+	void logMetalAllocationStats();
+
 	/** Returns a default MTLSamplerState to populate empty array element descriptors. */
 	id<MTLSamplerState> getDefaultMTLSamplerState();
 
@@ -1029,10 +1037,18 @@ public:
 
 #if !MVK_XCODE_16
 	void removeResidency(id allocation) {}
+	void removeResidencies(const id<MTLBuffer>* allocations, size_t count) {}
 #else
 	void removeResidency(id<MTLAllocation> allocation) {
 		@synchronized(_residencySet) {
 			[_residencySet removeAllocation:allocation];
+			[_residencySet commit];
+		}
+	}
+	void removeResidencies(const id<MTLBuffer>* allocations, size_t count) {
+		if (count == 0 || !_residencySet) return;
+		@synchronized(_residencySet) {
+			[_residencySet removeAllocations:(const id<MTLAllocation>*)allocations count:count];
 			[_residencySet commit];
 		}
 	}
@@ -1145,7 +1161,7 @@ protected:
 	MVKLiveResourceSet _liveResources;
 	MVKSmallVector<MVKCommandPool*> _commandPools;
 	std::mutex _rezLock;
-
+	std::atomic<uint32_t> _trimCompletionCount{0};
 	std::atomic<uint64_t> _submissionCounter{0};
 	uint64_t _trimPassCount{0};
 	MVKSmallVector<MVKDeviceMemory*> _deviceMemories;
@@ -1156,24 +1172,17 @@ protected:
 	 * Critical section ordering to prevent deadlock:
 	 *
 	 * 1. MVKDevice::_rezLock
-	 *    - Must be acquired before MVKCommandEncodingPool::_lock
-	 *    - Must be acquired before MVKMTLBufferAllocationPool::_lock
-	 *    - Used for device-level operations (command pool registry)
+	 *    - Protects device-level resource tracking and _commandPools registry
+	 *    - Never held while acquiring MVKCommandEncodingPool::_lock or MVKMTLBufferAllocationPool::_lock
+	 *      (trimCommandPoolBuffers() snapshots _commandPools and increments _trimCount under _rezLock,
+	 *      then releases _rezLock before trimming each pool)
 	 *
 	 * 2. MVKCommandEncodingPool::_lock
-	 *    - Protects allocator pool state
-	 *    - Must be acquired before MVKMTLBufferAllocationPool::_lock
+	 *    - Protects encoding pool state and transfer resources
+	 *    - Acquired before MVKMTLBufferAllocationPool::_lock during trimBufferAllocators()
 	 *
 	 * 3. MVKMTLBufferAllocationPool::_lock
-	 *    - Protects individual allocator state
-	 *    - Fine-grained locking for performance
-	 *
-	 * Deadlock analysis:
-	 *   - acquireAllocation() / returnAllocation() take pool _lock only
-	 *   - trimCommandPoolBuffers() takes _rezLock → encoding _lock → pool _lock
-	 *   - No reverse path exists → deadlock impossible
-	 *
-	 * Only trimCommandPoolBuffers() acquires all three locks.
+	 *    - Protects individual buffer allocation pool state
 	 */
 	std::mutex _sem4Lock;
     std::mutex _perfLock;

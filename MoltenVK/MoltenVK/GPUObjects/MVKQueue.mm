@@ -577,28 +577,28 @@ VkResult MVKQueueCommandBufferSubmission::commitActiveMTLCommandBuffer(bool sign
 // this may occur if a GPU semaphore here triggers another submission that triggers a fence,
 // and the app immediately destroys objects. Rare, but it has been encountered.
 void MVKQueueCommandBufferSubmission::finish() {
+	@autoreleasepool {
+		// Performed here instead of as part of execute() for rare case where app destroys queue
+		// immediately after a waitIdle() is cleared by fence below, taking the capture scope with it.
+		_queue->_submissionCaptureScope->endScope();
 
-	// Performed here instead of as part of execute() for rare case where app destroys queue
-	// immediately after a waitIdle() is cleared by fence below, taking the capture scope with it.
-	_queue->_submissionCaptureScope->endScope();
-
-	// If using inline semaphore signaling, do so now.
-	for (auto& ss : _signalSemaphores) { ss.encodeSignal(nil); }
-
-	// If a fence exists, signal it.
-	if (_fence) { _fence->signal(); }
-
-	// After GPU completion, trim temp buffer pools periodically
-	uint32_t trimInterval = getMVKConfig().trimCommandPoolInterval;
-	if (trimInterval > 0) {
-		static std::atomic<uint32_t> s_completionCount{0};
-		uint32_t count = s_completionCount.fetch_add(1, std::memory_order_relaxed) + 1;
-		if (count % trimInterval == 0) {
-			_device->trimCommandPoolBuffers();
+		// After GPU completion, trim temp buffer pools periodically before signaling semaphores/fences
+		uint32_t trimInterval = getMVKConfig().trimCommandPoolInterval;
+		if (trimInterval > 0) {
+			uint32_t count = _device->incrementTrimCompletionCount();
+			if (count % trimInterval == 0) {
+				_device->trimCommandPoolBuffers();
+			}
 		}
-	}
 
-	this->destroy();
+		// If using inline semaphore signaling, do so now.
+		for (auto& ss : _signalSemaphores) { ss.encodeSignal(nil); }
+
+		// If a fence exists, signal it.
+		if (_fence) { _fence->signal(); }
+
+		this->destroy();
+	}
 }
 
 // On device loss, the fence and signal semaphores may be signalled early, and they might then
