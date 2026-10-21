@@ -120,7 +120,7 @@ MVKCommandPool::~MVKCommandPool() {
 		_commandBufferPool.returnObject(mvkCB);
 	}
 	while (_trimCount.load(std::memory_order_acquire) > 0) {
-		std::this_thread::yield();
+		std::this_thread::sleep_for(std::chrono::microseconds(50));
 	}
 }
 

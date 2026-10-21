@@ -55,76 +55,74 @@ static uint32_t mvkGetMTLTextureIOSurfaceID(id<MTLTexture> tex) {
 
 MVKVulkanAPIObject* MVKImagePlane::getVulkanAPIObject() { return _image; }
 
-id<MTLTexture> MVKImagePlane::getMTLTexture() {
+id<MTLTexture> MVKImagePlane::getMTLTexture() { @autoreleasepool {
     if ( !_mtlTexture && _image->_vkFormat ) {
         // Lock and check again in case another thread has created the texture.
         lock_guard<mutex> lock(_image->_lock);
         if (_mtlTexture) { return _mtlTexture; }
 
-        @autoreleasepool {
-            MTLTextureDescriptor* mtlTexDesc = newMTLTextureDescriptor();    // temp retain
-            MVKImageMemoryBinding* memoryBinding = getMemoryBinding();
-            MVKDeviceMemory* dvcMem = memoryBinding->_deviceMemory;
+        MTLTextureDescriptor* mtlTexDesc = newMTLTextureDescriptor();    // temp retain
+        MVKImageMemoryBinding* memoryBinding = getMemoryBinding();
+		MVKDeviceMemory* dvcMem = memoryBinding->_deviceMemory;
 
-            // 2D-view-on-3D and block-texel views need a heap-backed texture to alias the memory. ensureMTLHeap() can return
-            // true without creating a heap, so create one if possible, then check getMTLHeap() for an actual heap.
-            if (_image->_is2DViewOn3DImageCompatible || _image->_isBlockTexelViewCompatible) {
-                dvcMem->ensureMTLHeap();
-            }
-            if (_image->_is2DViewOn3DImageCompatible && !dvcMem->getMTLHeap()) {
-                MVKAssert(0, "Creating a 2D view of a 3D texture currently requires a placement heap, which is not available.");
-            }
-            if (_image->_isBlockTexelViewCompatible && !dvcMem->getMTLHeap()) {
-                MVKAssert(0, "Creating an uncompressed view of a compressed texture currently requires a placement heap, which is not available.");
-            }
-
-            id<MTLTexture> tex;
-            // Use imported texture if we are binding to a VkDeviceMemory that was created with an import operation
-            if (dvcMem && (dvcMem->_externalMemoryHandleType & VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT) && dvcMem->_mtlTexture) {
-                tex = dvcMem->_mtlTexture;
-            } else if (_image->_ioSurface) {
-                tex = [_image->getMTLDevice()
-                       newTextureWithDescriptor: mtlTexDesc
-                       iosurface: _image->_ioSurface
-                       plane: _planeIndex];
-            } else if (memoryBinding->_mtlTexelBuffer) {
-                tex = [memoryBinding->_mtlTexelBuffer
-                       newTextureWithDescriptor: mtlTexDesc
-                       offset: memoryBinding->_mtlTexelBufferOffset + _subresources[0].layout.offset
-                       bytesPerRow: _subresources[0].layout.rowPitch];
-            } else if (dvcMem && dvcMem->getMTLHeap() && !_image->getIsDepthStencil()) {
-                // Metal support for depth/stencil from heaps is flaky
-                _heapAllocation.heap = dvcMem->getMTLHeap();
-                _heapAllocation.offset = memoryBinding->getDeviceMemoryOffset() + _subresources[0].layout.offset;
-                const auto texSizeAlign = [dvcMem->getMTLDevice() heapTextureSizeAndAlignWithDescriptor:mtlTexDesc];
-                _heapAllocation.size = texSizeAlign.size;
-                _heapAllocation.align = texSizeAlign.align;
-                tex = [_heapAllocation.heap
-                               newTextureWithDescriptor: mtlTexDesc
-                               offset: _heapAllocation.offset];
-                if (_image->_isAliasable) { [tex makeAliasable]; }
-            } else if (_image->_isAliasable && dvcMem && dvcMem->isDedicatedAllocation() &&
-                !mvkContains(dvcMem->_imageMemoryBindings, memoryBinding)) {
-                // This is a dedicated allocation, but it belongs to another aliasable image.
-                // In this case, use the MTLTexture from the memory's dedicated image.
-                // We know the other image must be aliasable, or I couldn't have been bound
-                // to its memory: the memory object wouldn't allow it.
-                tex = [dvcMem->_imageMemoryBindings[0]->_image->getMTLTexture(_planeIndex, mtlTexDesc.pixelFormat) retain];
-            } else {
-                tex = [_image->getMTLDevice() newTextureWithDescriptor: mtlTexDesc];
-            }
-            if (tex.storageMode != MTLStorageModeMemoryless) {
-                _image->_device->makeResident(tex);
-                _image->_device->getLiveResources().add(tex);
-            }
-            _mtlTexture = tex;
-
-            [mtlTexDesc release];                                            // temp release
-            propagateDebugName();
+        // 2D-view-on-3D and block-texel views need a heap-backed texture to alias the memory. ensureMTLHeap() can return
+        // true without creating a heap, so create one if possible, then check getMTLHeap() for an actual heap.
+        if (_image->_is2DViewOn3DImageCompatible || _image->_isBlockTexelViewCompatible) {
+            dvcMem->ensureMTLHeap();
         }
+        if (_image->_is2DViewOn3DImageCompatible && !dvcMem->getMTLHeap()) {
+            MVKAssert(0, "Creating a 2D view of a 3D texture currently requires a placement heap, which is not available.");
+        }
+        if (_image->_isBlockTexelViewCompatible && !dvcMem->getMTLHeap()) {
+            MVKAssert(0, "Creating an uncompressed view of a compressed texture currently requires a placement heap, which is not available.");
+        }
+
+        id<MTLTexture> tex;
+        // Use imported texture if we are binding to a VkDeviceMemory that was created with an import operation
+        if (dvcMem && (dvcMem->_externalMemoryHandleType & VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT) && dvcMem->_mtlTexture) {
+            tex = dvcMem->_mtlTexture;
+        } else if (_image->_ioSurface) {
+            tex = [_image->getMTLDevice()
+                   newTextureWithDescriptor: mtlTexDesc
+                   iosurface: _image->_ioSurface
+                   plane: _planeIndex];
+        } else if (memoryBinding->_mtlTexelBuffer) {
+            tex = [memoryBinding->_mtlTexelBuffer
+                   newTextureWithDescriptor: mtlTexDesc
+                   offset: memoryBinding->_mtlTexelBufferOffset + _subresources[0].layout.offset
+                   bytesPerRow: _subresources[0].layout.rowPitch];
+        } else if (dvcMem && dvcMem->getMTLHeap() && !_image->getIsDepthStencil()) {
+            // Metal support for depth/stencil from heaps is flaky
+            _heapAllocation.heap = dvcMem->getMTLHeap();
+            _heapAllocation.offset = memoryBinding->getDeviceMemoryOffset() + _subresources[0].layout.offset;
+            const auto texSizeAlign = [dvcMem->getMTLDevice() heapTextureSizeAndAlignWithDescriptor:mtlTexDesc];
+            _heapAllocation.size = texSizeAlign.size;
+            _heapAllocation.align = texSizeAlign.align;
+            tex = [_heapAllocation.heap
+                           newTextureWithDescriptor: mtlTexDesc
+                           offset: _heapAllocation.offset];
+            if (_image->_isAliasable) { [tex makeAliasable]; }
+        } else if (_image->_isAliasable && dvcMem && dvcMem->isDedicatedAllocation() &&
+            !mvkContains(dvcMem->_imageMemoryBindings, memoryBinding)) {
+            // This is a dedicated allocation, but it belongs to another aliasable image.
+            // In this case, use the MTLTexture from the memory's dedicated image.
+            // We know the other image must be aliasable, or I couldn't have been bound
+            // to its memory: the memory object wouldn't allow it.
+            tex = [dvcMem->_imageMemoryBindings[0]->_image->getMTLTexture(_planeIndex, mtlTexDesc.pixelFormat) retain];
+        } else {
+            tex = [_image->getMTLDevice() newTextureWithDescriptor: mtlTexDesc];
+        }
+        if (tex.storageMode != MTLStorageModeMemoryless) {
+            _image->_device->makeResident(tex);
+            _image->_device->getLiveResources().add(tex);
+        }
+        _mtlTexture = tex;
+
+        [mtlTexDesc release];                                            // temp release
+        propagateDebugName();
     }
     return _mtlTexture;
-}
+}}
 
 id<MTLTexture> MVKImagePlane::getMTLTexture(MTLPixelFormat mtlPixFmt) {
     // Note: Retrieve the base texture outside of lock to avoid deadlock if it too needs to be lazily created.
