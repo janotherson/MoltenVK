@@ -211,8 +211,17 @@ MVK_PUBLIC_SYMBOL bool SPIRVToMSLConversionConfiguration::matches(const SPIRVToM
 			!containsMatching(other.dynamicBufferDescriptors, db)) { return false; }
 	}
 
+	for (const auto& db : other.dynamicBufferDescriptors) {
+		if (db.stage == options.entryPointStage &&
+			!containsMatching(dynamicBufferDescriptors, db)) { return false; }
+	}
+
 	for (uint32_t dsIdx : discreteDescriptorSets) {
 		if ( !contains(other.discreteDescriptorSets, dsIdx)) { return false; }
+	}
+
+	for (uint32_t dsIdx : other.discreteDescriptorSets) {
+		if ( !contains(discreteDescriptorSets, dsIdx)) { return false; }
 	}
 
     return true;
@@ -366,6 +375,7 @@ MVK_PUBLIC_SYMBOL bool SPIRVToMSLConverter::convert(SPIRVToMSLConversionConfigur
 	conversionResult.resultInfo.needsDispatchBaseBuffer = pMSLCompiler && pMSLCompiler->needs_dispatch_base_buffer();
 	conversionResult.resultInfo.needsViewRangeBuffer = pMSLCompiler && pMSLCompiler->needs_view_mask_buffer();
 	conversionResult.resultInfo.needsDrawId = pMSLCompiler && pMSLCompiler->has_active_builtin(spv::BuiltInDrawIndex, spv::StorageClassInput);
+	conversionResult.resultInfo.needsDepthClipStateBuffer = pMSLCompiler && pMSLCompiler->needs_depth_clip_state_buffer();
 	conversionResult.resultInfo.usesPhysicalStorageBufferAddressesCapability = usesPhysicalStorageBufferAddressesCapability(pMSLCompiler);
 	populateSpecializationMacros(pMSLCompiler, conversionResult.resultInfo.specializationMacros);
 
