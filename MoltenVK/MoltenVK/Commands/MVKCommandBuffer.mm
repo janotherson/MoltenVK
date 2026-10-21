@@ -1186,7 +1186,9 @@ void MVKCommandEncoder::setComputeBytes(id<MTLComputeCommandEncoder> mtlEncoder,
 // Return the MTLBuffer allocation to the pool once the command buffer is done with it
 const MVKMTLBufferAllocation* MVKCommandEncoder::getTempMTLBuffer(NSUInteger length, bool isPrivate, bool isDedicated) {
     MVKMTLBufferAllocation* mtlBuffAlloc = getCommandEncodingPool()->acquireMTLBufferAllocation(length, isPrivate, isDedicated);
-    _tempMTLBufferAllocations.push_back(mtlBuffAlloc);
+    if (mtlBuffAlloc) {
+        _tempMTLBufferAllocations.push_back(mtlBuffAlloc);
+    }
     return mtlBuffAlloc;
 }
 
@@ -1376,7 +1378,7 @@ void MVKCommandEncoder::finishTempMTLBuffers() {
 
 void MVKCommandEncoder::clearTempMTLBuffers() {
     for (auto* alloc : _tempMTLBufferAllocations) {
-        alloc->returnToPool();
+        if (alloc) { alloc->returnToPool(); }
     }
     _tempMTLBufferAllocations.clear();
 }

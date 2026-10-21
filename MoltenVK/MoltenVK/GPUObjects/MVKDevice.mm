@@ -94,32 +94,29 @@ static id<MTLHeap> swizzled_newHeapWithDesc(id self, SEL _cmd,
 	return result;
 }
 
-static bool g_trackingInstalled = false;
-
 static void mvkInstallMetalAllocationTracking(id<MTLDevice> mtlDevice) {
-	if (g_trackingInstalled) return;
+	static dispatch_once_t onceToken;
+	dispatch_once(&onceToken, ^{
+		Class deviceClass = object_getClass(mtlDevice);
 
-	Class deviceClass = object_getClass(mtlDevice);
+		SEL selBuf = @selector(newBufferWithLength:options:);
+		Method mBuf = class_getInstanceMethod(deviceClass, selBuf);
+		if (mBuf) {
+			g_origNewBufferWithLength = method_setImplementation(mBuf, (IMP)swizzled_newBufferWithLength);
+		}
 
-	SEL selBuf = @selector(newBufferWithLength:options:);
-	Method mBuf = class_getInstanceMethod(deviceClass, selBuf);
-	if (mBuf) {
-		g_origNewBufferWithLength = method_setImplementation(mBuf, (IMP)swizzled_newBufferWithLength);
-	}
+		SEL selTex = @selector(newTextureWithDescriptor:);
+		Method mTex = class_getInstanceMethod(deviceClass, selTex);
+		if (mTex) {
+			g_origNewTextureWithDesc = method_setImplementation(mTex, (IMP)swizzled_newTextureWithDesc);
+		}
 
-	SEL selTex = @selector(newTextureWithDescriptor:);
-	Method mTex = class_getInstanceMethod(deviceClass, selTex);
-	if (mTex) {
-		g_origNewTextureWithDesc = method_setImplementation(mTex, (IMP)swizzled_newTextureWithDesc);
-	}
-
-	SEL selHeap = @selector(newHeapWithDescriptor:);
-	Method mHeap = class_getInstanceMethod(deviceClass, selHeap);
-	if (mHeap) {
-		g_origNewHeapWithDesc = method_setImplementation(mHeap, (IMP)swizzled_newHeapWithDesc);
-	}
-
-	g_trackingInstalled = true;
+		SEL selHeap = @selector(newHeapWithDescriptor:);
+		Method mHeap = class_getInstanceMethod(deviceClass, selHeap);
+		if (mHeap) {
+			g_origNewHeapWithDesc = method_setImplementation(mHeap, (IMP)swizzled_newHeapWithDesc);
+		}
+	});
 }
 
 #else // ! MVK_USE_METAL_PRIVATE_API
@@ -4727,6 +4724,8 @@ void MVKDevice::logMetalAllocationStats() {
 }
 
 void MVKDevice::trimOrphanedDeviceMemory() {
+	if (!getMVKConfig().logOrphanedDeviceMemory) return;
+
 	_trimPassCount++;
 	uint64_t submissionCount = _submissionCounter.load(std::memory_order_relaxed);
 
@@ -4755,8 +4754,15 @@ void MVKDevice::trimOrphanedDeviceMemory() {
 		devMemCount = (uint32_t)_deviceMemories.size();
 
 		for (auto* mem : _deviceMemories) {
-			uint32_t nBuf = (uint32_t)mem->_buffers.size();
-			uint32_t nImg = (uint32_t)mem->_imageMemoryBindings.size();
+			uint32_t nBuf = 0;
+			uint32_t nImg = 0;
+			bool isOrphan = false;
+			{
+				std::lock_guard<std::mutex> memLock(mem->_rezLock);
+				nBuf = (uint32_t)mem->_buffers.size();
+				nImg = (uint32_t)mem->_imageMemoryBindings.size();
+				isOrphan = mem->isOrphanedBlock();
+			}
 			totalBoundBuffers += nBuf;
 			totalBoundImages += nImg;
 
@@ -4778,7 +4784,7 @@ void MVKDevice::trimOrphanedDeviceMemory() {
 
 			uint32_t totalRes = nBuf + nImg;
 			if (totalRes == 0) {
-				if (mem->isOrphanedBlock()) {
+				if (isOrphan) {
 					orphanedBufferBacked++;
 					orphanedBufferBackedBytes += mem->_allocationSize;
 				}
@@ -4791,20 +4797,23 @@ void MVKDevice::trimOrphanedDeviceMemory() {
 			uint32_t idx = 0;
 			for (auto* mem : _deviceMemories) {
 				if (mem->_mtlHeap) {
+					uint32_t nBuf = 0;
+					uint32_t nImg = 0;
+					{
+						std::lock_guard<std::mutex> memLock(mem->_rezLock);
+						nBuf = (uint32_t)mem->_buffers.size();
+						nImg = (uint32_t)mem->_imageMemoryBindings.size();
+					}
 					MVKLogInfo("    Heap[%u]: %.0f MB, %u bufs, %u imgs",
 							   idx,
 							   mem->_mtlHeap.size / (1024.0*1024.0),
-							   (uint32_t)mem->_buffers.size(),
-							   (uint32_t)mem->_imageMemoryBindings.size());
+							   nBuf, nImg);
 				}
 				idx++;
 			}
 			s_lastHeapCount = heapCount;
 		}
 	}
-
-	bool shouldLog = getMVKConfig().logOrphanedDeviceMemory;
-	if (!shouldLog) return;
 
 	MVKLogInfo("=== Memory Audit (pass %llu, submission %llu) ===", _trimPassCount, submissionCount);
 	if (metalTotal > 0) {
@@ -4829,6 +4838,7 @@ void MVKDevice::trimOrphanedDeviceMemory() {
 		std::lock_guard<std::mutex> lock(_rezLock);
 		pools.reserve(_commandPools.size());
 		for (auto* pool : _commandPools) {
+			pool->_trimCount.fetch_add(1, std::memory_order_relaxed);
 			pools.push_back(pool);
 		}
 	}
@@ -4839,14 +4849,22 @@ void MVKDevice::trimOrphanedDeviceMemory() {
 		auto* encPool = cp->getCommandEncodingPool();
 		totalTransferImages += encPool->getTransferImagesCount();
 		totalTransferBuffers += encPool->getTransferBuffersCount();
-		auto bs = encPool->getMtlBufferAllocatorStats();
-		sharedBufStats.totalMTLBuffers += bs.totalMTLBuffers;
-		sharedBufStats.activeMTLBuffers += bs.activeMTLBuffers;
-		sharedBufStats.emptyMTLBuffers += bs.emptyMTLBuffers;
-		sharedBufStats.releasedSlots += bs.releasedSlots;
-		sharedBufStats.totalBytes += bs.totalBytes;
-		sharedBufStats.activeBytes += bs.activeBytes;
-		sharedBufStats.releasedBytes += bs.releasedBytes;
+
+		auto accumulateStats = [&](const MVKCommandEncodingPool::AllocatorStats& bs) {
+			sharedBufStats.totalMTLBuffers += bs.totalMTLBuffers;
+			sharedBufStats.activeMTLBuffers += bs.activeMTLBuffers;
+			sharedBufStats.emptyMTLBuffers += bs.emptyMTLBuffers;
+			sharedBufStats.releasedSlots += bs.releasedSlots;
+			sharedBufStats.totalBytes += bs.totalBytes;
+			sharedBufStats.activeBytes += bs.activeBytes;
+			sharedBufStats.releasedBytes += bs.releasedBytes;
+		};
+
+		accumulateStats(encPool->getMtlBufferAllocatorStats());
+		accumulateStats(encPool->getPrivateMtlBufferAllocatorStats());
+		accumulateStats(encPool->getDedicatedMtlBufferAllocatorStats());
+
+		cp->_trimCount.fetch_sub(1, std::memory_order_release);
 	}
 	MVKLogInfo("  Driver Temp Buffers: %u active (%.1f MB), %u standby, %u trimmed (%.1f MB freed) across %zu pools",
 			   sharedBufStats.activeMTLBuffers, sharedBufStats.activeBytes / (1024.0*1024.0),
@@ -5472,7 +5490,9 @@ MVKDevice::MVKDevice(MVKPhysicalDevice* physicalDevice, const VkDeviceCreateInfo
 	initQueues(pCreateInfo);
 	reservePrivateData(pCreateInfo);
 	initConfiguration();
-	mvkInstallMetalAllocationTracking(_physicalDevice->getMTLDevice());
+	if (getMVKConfig().logOrphanedDeviceMemory || getMVKConfig().orphanedMemoryLogInterval > 0) {
+		mvkInstallMetalAllocationTracking(_physicalDevice->getMTLDevice());
+	}
 
 	if (!physicalDevice->_gpuCapabilities.isAppleGPU &&
 	        (_enabledFeatures.robustBufferAccess || _enabledImageRobustnessFeatures.robustImageAccess)) {
