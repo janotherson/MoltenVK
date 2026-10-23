@@ -31,6 +31,7 @@ Released TBD
 - Fix pipeline cache matching incompatible shaders when the only difference was in dynamic buffer offset usage.
 - Fix GPU address faults when a swapchain image is accessed through a descriptor set while using a residency set.
 - Fix descriptor set argument buffers not being rebound after `vkCmdClearAttachments()` or an internal compute command replaced their Metal buffer binding.
+- Fix buffer sizes written to the wrong array element by descriptor updates with a non-zero `dstArrayElement` when using Metal argument buffers.
 
 
 
