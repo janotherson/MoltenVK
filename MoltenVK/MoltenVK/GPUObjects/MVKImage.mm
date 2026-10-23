@@ -1914,6 +1914,7 @@ id<MTLTexture> MVKImageViewPlane::getMTLTexture() {
 
             MVKAssert(baseMTLTexture, "Attempting to create an MTLTexture view from a nil base texture.");
             initializeMTLTexture(newMTLTextureFromBaseMTLTexture(baseMTLTexture)); // retained
+            if (_mtlTexture) { _mtlTextureBase = [baseMTLTexture retain]; }
         }
         return _mtlTexture;
     } else {
@@ -1922,6 +1923,9 @@ id<MTLTexture> MVKImageViewPlane::getMTLTexture() {
 }
 
 bool MVKImageViewPlane::matchesMTLTextureViewBase(id<MTLTexture> mtlTexture) {
+    // A view made through a memory alias (a 2D view of a 3D texture, a block texel view) has the
+    // alias as its parent, never the base texture, so compare with the base it was created from.
+    if (_mtlTextureBase && _mtlTextureBase == mtlTexture) { return true; }
     id<MTLTexture> cachedBaseMTLTexture = mvkGetBaseMTLTexture(_mtlTexture);
     if (cachedBaseMTLTexture == mtlTexture) { return true; }
 
@@ -2213,6 +2217,8 @@ void MVKImageViewPlane::releaseMTLTexture() {
 		[tex release];
 		_mtlTexture = nil;
 	}
+	[_mtlTextureBase release];
+	_mtlTextureBase = nil;
 }
 
 MVKImageViewPlane::~MVKImageViewPlane() {

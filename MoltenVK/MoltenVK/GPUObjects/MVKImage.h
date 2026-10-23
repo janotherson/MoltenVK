@@ -571,6 +571,7 @@ protected:
     friend MVKImageView;
     MVKImageView* _imageView;
 	id<MTLTexture> _mtlTexture;
+	id<MTLTexture> _mtlTextureBase = nil;
 	VkComponentMapping _componentSwizzle;
     MTLPixelFormat _mtlPixFmt;
 	uint8_t _planeIndex;

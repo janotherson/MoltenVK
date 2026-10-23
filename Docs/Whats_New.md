@@ -32,6 +32,7 @@ Released TBD
 - Fix GPU address faults when a swapchain image is accessed through a descriptor set while using a residency set.
 - Fix descriptor set argument buffers not being rebound after `vkCmdClearAttachments()` or an internal compute command replaced their Metal buffer binding.
 - Fix buffer sizes written to the wrong array element by descriptor updates with a non-zero `dstArrayElement` when using Metal argument buffers.
+- Fix 2D array views of 3D images recreating their `MTLTexture` on every use and releasing it while a command buffer still uses it.
 
 
 
