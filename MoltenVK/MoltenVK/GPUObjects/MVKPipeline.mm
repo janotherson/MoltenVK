@@ -3093,7 +3093,11 @@ id<MTLComputePipelineState> MVKComputePipelineCompiler::newMTLComputePipelineSta
 
 	MTLPipelineOption options = MTLPipelineOptionNone;
 	if (_reflectCount) {
+#if MVK_XCODE_16
 		if (@available(macOS 13.0, iOS 16.0, tvOS 16.0, *)) { options = MTLPipelineOptionBindingInfo | MTLPipelineOptionBufferTypeInfo; }
+#else
+		options = MTLPipelineOptionArgumentInfo | MTLPipelineOptionBufferTypeInfo;	// Older SDKs lack the BindingInfo name (same value)
+#endif
 	}
 	compile(lock, ^{
 		auto mtlDev = getMTLDevice();
