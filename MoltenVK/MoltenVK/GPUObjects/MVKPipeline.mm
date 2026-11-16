@@ -2533,10 +2533,53 @@ MVKShaderLibrary* MVKPipelineCache::getShaderLibrary(SPIRVToMSLConversionConfigu
 													 uint64_t startTime) {
 	if (_isExternallySynchronized) {
 		return getShaderLibraryImpl(pContext, shaderModule, pipeline, pShaderFeedback, startTime);
-	} else {
-		lock_guard<mutex> lock(_shaderCacheLock);
-		return getShaderLibraryImpl(pContext, shaderModule, pipeline, pShaderFeedback, startTime);
 	}
+
+	// Converting SPIR-V to MSL, and compiling that MSL, can take a long time, and this cache is often
+	// shared by all of the threads that the app is using to create pipelines. To allow those threads
+	// to compile different shaders concurrently, the cache lock is held only while the content of
+	// the cache is being accessed, and is not held while a shader is being converted and compiled.
+	MVKShaderLibraryCache* slCache = nullptr;
+	MVKShaderLibrary* retired = nullptr;
+	bool failOnCompile = pipeline->shouldFailOnPipelineCompileRequired();
+	auto findCachedShaderLibrary = [&]() {
+		lock_guard<mutex> lock(_shaderCacheLock);
+		slCache = getShaderLibraryCache(shaderModule->getKey());
+		retired = nullptr;
+		MVKShaderLibrary* shLib = slCache->findShaderLibrary(pContext, pShaderFeedback, startTime);
+		if (shLib && failOnCompile && shLib->_compilePending.load(std::memory_order_acquire)) { shLib = nullptr; }
+		if (shLib && shLib->_compileFailed.load(std::memory_order_acquire)) { retired = shLib; shLib = nullptr; }
+		if (shLib && pShaderFeedback) { mvkEnableFlags(pShaderFeedback->flags, VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT); }
+		return shLib;
+	};
+
+	MVKShaderLibrary* shLib = findCachedShaderLibrary();
+	if (shLib || failOnCompile) { return shLib; }
+
+	// Compilations of the same shader module remain serialized. The SPIR-V converter in the shader
+	// module does not support concurrent conversions, and a thread that needs the same shader library
+	// as one that is already being compiled will wait for it here, and then retrieve it from the cache.
+	lock_guard<mutex> compileLock(slCache->_compileLock);
+	shLib = findCachedShaderLibrary();
+	if (shLib) { return shLib; }
+
+	SPIRVToMSLConversionResult conversionResult;
+	if ( !shaderModule->convert(pContext, conversionResult) ) { return nullptr; }
+	shLib = new MVKShaderLibrary(slCache->_owner, conversionResult);
+	{
+		lock_guard<mutex> lock(_shaderCacheLock);
+		if (retired) {
+			for (auto& slPair : slCache->_shaderLibraries) {
+				if (slPair.second == retired) { slPair.second = shLib; break; }
+			}
+			slCache->_retiredLibraries.push_back(retired);
+		} else {
+			slCache->addShaderLibrary(pContext, shLib);
+		}
+		markDirty();
+	}
+	if (pShaderFeedback) { pShaderFeedback->duration += mvkGetElapsedNanoseconds(startTime); }
+	return shLib;
 }
 
 MVKShaderLibrary* MVKPipelineCache::getShaderLibraryImpl(SPIRVToMSLConversionConfiguration* pContext,

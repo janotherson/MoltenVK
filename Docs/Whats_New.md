@@ -40,6 +40,7 @@ Released TBD
 - Fix `vkGetPipelineCacheData()` returning no data when the data is requested without first querying its size,
   or when the pipeline cache has changed since its size was queried.
 - Fix `vkCreatePipelineCache()` failing when the initial data is truncated or otherwise invalid.
+- Allow threads that share a pipeline cache to compile different shaders concurrently.
 
 
 
