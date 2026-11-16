@@ -37,6 +37,9 @@ Released TBD
 - Improve performance of creating pipelines with large pipeline layouts from previously converted shaders.
 - Improve performance of creating pipelines with large vertex or tessellation shaders, by reflecting the interface variables of each shader only once.
 - Improve performance of occlusion queries ended in many render passes, by accumulating their results only when they are needed.
+- Fix `vkGetPipelineCacheData()` returning no data when the data is requested without first querying its size,
+  or when the pipeline cache has changed since its size was queried.
+- Fix `vkCreatePipelineCache()` failing when the initial data is truncated or otherwise invalid.
 
 
 
