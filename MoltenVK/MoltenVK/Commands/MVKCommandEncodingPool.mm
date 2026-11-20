@@ -215,7 +215,6 @@ id<MTLComputePipelineState> MVKCommandEncodingPool::getConvertUint8IndicesMTLCom
 }
 
 void MVKCommandEncodingPool::clear() {
-	lock_guard<mutex> lock(_lock);
 	destroyMetalResources();
 }
 
@@ -275,86 +274,97 @@ MVKCommandEncodingPool::~MVKCommandEncodingPool() {
 
 /**  Ensure all cached Metal components are released. */
 void MVKCommandEncodingPool::destroyMetalResources() {
-	MVKDevice* mvkDev = _commandPool->getDevice();
+	MVKSmallVector<MVKBuffer*, 16> buffersToDestroy;
+	MVKSmallVector<MVKDeviceMemory*, 16> memoriesToFree;
+	MVKSmallVector<MVKImage*, 16> imagesToDestroy;
 
-    for (auto& pair : _cmdBlitImageMTLRenderPipelineStates) { [pair.second release]; }
-    _cmdBlitImageMTLRenderPipelineStates.clear();
-
-    for (auto& pair : _cmdClearMTLRenderPipelineStates) { [pair.second release]; }
-    _cmdClearMTLRenderPipelineStates.clear();
-
-    for (auto& pair : _mtlDepthStencilStates) { [pair.second release]; }
-    _mtlDepthStencilStates.clear();
-
-    for (auto& pair : _transferImages) {
-        if (pair.second.image) { mvkDev->destroyImage(pair.second.image, nullptr); }
-    }
-    _transferImages.clear();
-
-    for (auto& pair : _transferBuffers) {
-        if (pair.second.buffer) { mvkDev->destroyBuffer(pair.second.buffer, nullptr); }
-        if (pair.second.memory) { mvkDev->freeMemory(pair.second.memory, nullptr); }
-    }
-    _transferBuffers.clear();
-
-    [_cmdClearDepthAndStencilDepthStencilState release];
-    _cmdClearDepthAndStencilDepthStencilState = nil;
-
-    [_cmdClearDepthOnlyDepthStencilState release];
-    _cmdClearDepthOnlyDepthStencilState = nil;
-
-    [_cmdClearStencilOnlyDepthStencilState release];
-    _cmdClearStencilOnlyDepthStencilState = nil;
-
-    [_cmdClearDefaultDepthStencilState release];
-    _cmdClearDefaultDepthStencilState = nil;
-
-    [_mtlCopyBufferBytesComputePipelineState release];
-    _mtlCopyBufferBytesComputePipelineState = nil;
-
-    [_mtlFillBufferComputePipelineState release];
-    _mtlFillBufferComputePipelineState = nil;
-
-	[_mtlDrawIndirectPopulateIndexesComputePipelineState release];
-	_mtlDrawIndirectPopulateIndexesComputePipelineState = nil;
-
-	for (uint32_t i = 0; i < kColorImageCount; i++)
 	{
-		[_mtlClearColorImageComputePipelineState[i] release];
-		_mtlClearColorImageComputePipelineState[i] = nil;
-		[_mtlResolveColorImageComputePipelineState[i] release];
-		_mtlResolveColorImageComputePipelineState[i] = nil;
+		lock_guard<mutex> lock(_lock);
+
+		for (auto& pair : _cmdBlitImageMTLRenderPipelineStates) { [pair.second release]; }
+		_cmdBlitImageMTLRenderPipelineStates.clear();
+
+		for (auto& pair : _cmdClearMTLRenderPipelineStates) { [pair.second release]; }
+		_cmdClearMTLRenderPipelineStates.clear();
+
+		for (auto& pair : _mtlDepthStencilStates) { [pair.second release]; }
+		_mtlDepthStencilStates.clear();
+
+		for (auto& pair : _transferImages) {
+			if (pair.second.image) { imagesToDestroy.push_back(pair.second.image); }
+		}
+		_transferImages.clear();
+
+		for (auto& pair : _transferBuffers) {
+			if (pair.second.buffer) { buffersToDestroy.push_back(pair.second.buffer); }
+			if (pair.second.memory) { memoriesToFree.push_back(pair.second.memory); }
+		}
+		_transferBuffers.clear();
+
+		[_cmdClearDepthAndStencilDepthStencilState release];
+		_cmdClearDepthAndStencilDepthStencilState = nil;
+
+		[_cmdClearDepthOnlyDepthStencilState release];
+		_cmdClearDepthOnlyDepthStencilState = nil;
+
+		[_cmdClearStencilOnlyDepthStencilState release];
+		_cmdClearStencilOnlyDepthStencilState = nil;
+
+		[_cmdClearDefaultDepthStencilState release];
+		_cmdClearDefaultDepthStencilState = nil;
+
+		[_mtlCopyBufferBytesComputePipelineState release];
+		_mtlCopyBufferBytesComputePipelineState = nil;
+
+		[_mtlFillBufferComputePipelineState release];
+		_mtlFillBufferComputePipelineState = nil;
+
+		[_mtlDrawIndirectPopulateIndexesComputePipelineState release];
+		_mtlDrawIndirectPopulateIndexesComputePipelineState = nil;
+
+		for (uint32_t i = 0; i < kColorImageCount; i++)
+		{
+			[_mtlClearColorImageComputePipelineState[i] release];
+			_mtlClearColorImageComputePipelineState[i] = nil;
+			[_mtlResolveColorImageComputePipelineState[i] release];
+			_mtlResolveColorImageComputePipelineState[i] = nil;
+		}
+
+		[_mtlDrawIndirectConvertBuffersComputePipelineState[0] release];
+		[_mtlDrawIndirectConvertBuffersComputePipelineState[1] release];
+		_mtlDrawIndirectConvertBuffersComputePipelineState[0] = nil;
+		_mtlDrawIndirectConvertBuffersComputePipelineState[1] = nil;
+
+		[_mtlDrawIndirectCountConvertBuffersComputePipelineState[0] release];
+		[_mtlDrawIndirectCountConvertBuffersComputePipelineState[1] release];
+		_mtlDrawIndirectCountConvertBuffersComputePipelineState[0] = nil;
+		_mtlDrawIndirectCountConvertBuffersComputePipelineState[1] = nil;
+
+		[_mtlDrawIndirectCopyZeroDivisorVertexBuffersComputePipelineState release];
+		_mtlDrawIndirectCopyZeroDivisorVertexBuffersComputePipelineState = nil;
+
+		[_mtlDrawIndirectTessConvertBuffersComputePipelineState[0] release];
+		[_mtlDrawIndirectTessConvertBuffersComputePipelineState[1] release];
+		_mtlDrawIndirectTessConvertBuffersComputePipelineState[0] = nil;
+		_mtlDrawIndirectTessConvertBuffersComputePipelineState[1] = nil;
+
+		[_mtlDrawIndexedCopyIndexBufferComputePipelineState[0] release];
+		[_mtlDrawIndexedCopyIndexBufferComputePipelineState[1] release];
+		_mtlDrawIndexedCopyIndexBufferComputePipelineState[0] = nil;
+		_mtlDrawIndexedCopyIndexBufferComputePipelineState[1] = nil;
+
+		[_mtlCopyQueryPoolResultsComputePipelineState release];
+		_mtlCopyQueryPoolResultsComputePipelineState = nil;
+
+		[_mtlAccumOcclusionQueryResultsComputePipelineState release];
+		_mtlAccumOcclusionQueryResultsComputePipelineState = nil;
+
+		[_mtlConvertUint8IndicesComputePipelineState release];
+		_mtlConvertUint8IndicesComputePipelineState = nil;
 	}
 
-    [_mtlDrawIndirectConvertBuffersComputePipelineState[0] release];
-    [_mtlDrawIndirectConvertBuffersComputePipelineState[1] release];
-    _mtlDrawIndirectConvertBuffersComputePipelineState[0] = nil;
-    _mtlDrawIndirectConvertBuffersComputePipelineState[1] = nil;
-
-    [_mtlDrawIndirectCountConvertBuffersComputePipelineState[0] release];
-    [_mtlDrawIndirectCountConvertBuffersComputePipelineState[1] release];
-    _mtlDrawIndirectCountConvertBuffersComputePipelineState[0] = nil;
-    _mtlDrawIndirectCountConvertBuffersComputePipelineState[1] = nil;
-
-    [_mtlDrawIndirectCopyZeroDivisorVertexBuffersComputePipelineState release];
-    _mtlDrawIndirectCopyZeroDivisorVertexBuffersComputePipelineState = nil;
-
-    [_mtlDrawIndirectTessConvertBuffersComputePipelineState[0] release];
-    [_mtlDrawIndirectTessConvertBuffersComputePipelineState[1] release];
-    _mtlDrawIndirectTessConvertBuffersComputePipelineState[0] = nil;
-    _mtlDrawIndirectTessConvertBuffersComputePipelineState[1] = nil;
-
-    [_mtlDrawIndexedCopyIndexBufferComputePipelineState[0] release];
-    [_mtlDrawIndexedCopyIndexBufferComputePipelineState[1] release];
-    _mtlDrawIndexedCopyIndexBufferComputePipelineState[0] = nil;
-    _mtlDrawIndexedCopyIndexBufferComputePipelineState[1] = nil;
-
-    [_mtlCopyQueryPoolResultsComputePipelineState release];
-    _mtlCopyQueryPoolResultsComputePipelineState = nil;
-
-    [_mtlAccumOcclusionQueryResultsComputePipelineState release];
-    _mtlAccumOcclusionQueryResultsComputePipelineState = nil;
-
-    [_mtlConvertUint8IndicesComputePipelineState release];
-    _mtlConvertUint8IndicesComputePipelineState = nil;
+	MVKDevice* mvkDev = _commandPool->getDevice();
+	for (auto* buf : buffersToDestroy) { mvkDev->destroyBuffer(buf, nullptr); }
+	for (auto* mem : memoriesToFree) { mvkDev->freeMemory(mem, nullptr); }
+	for (auto* img : imagesToDestroy) { mvkDev->destroyImage(img, nullptr); }
 }
