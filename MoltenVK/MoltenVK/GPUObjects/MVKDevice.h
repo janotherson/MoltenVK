@@ -1134,18 +1134,20 @@ protected:
 	 *
 	 * Critical section ordering to prevent deadlock:
 	 *
-	 * 1. MVKDevice::_rezLock
-	 *    - Protects device-level resource tracking and _commandPools registry
-	 *    - Never held while acquiring MVKCommandEncodingPool::_lock or MVKMTLBufferAllocationPool::_lock
-	 *      (trimCommandPoolBuffers() snapshots _commandPools and increments _trimCount under _rezLock,
-	 *      then releases _rezLock before trimming each pool)
-	 *
-	 * 2. MVKCommandEncodingPool::_lock
+	 * 1. MVKCommandEncodingPool::_lock
 	 *    - Protects encoding pool state and transfer resources
-	 *    - Acquired before MVKMTLBufferAllocationPool::_lock during trimBufferAllocators()
+	 *    - Acquired before MVKMTLBufferAllocationPool::_lock during trimBufferAllocators(),
+	 *      and before leaf MVKDevice::_rezLock when lazily creating transfer buffers/images
 	 *
-	 * 3. MVKMTLBufferAllocationPool::_lock
-	 *    - Protects individual buffer allocation pool state
+	 * 2. MVKMTLBufferAllocationPool::_lock
+	 *    - Leaf lock protecting individual buffer allocation pool state
+	 *
+	 * 3. MVKDevice::_rezLock
+	 *    - Leaf lock protecting _resources, _commandPools, and _deviceMemories
+	 *    - trimCommandPoolBuffers() snapshots _commandPools and increments _trimCount under _rezLock,
+	 *      then releases _rezLock before calling into MVKCommandEncodingPool
+	 *    - trimBufferAllocators() and destroyMetalResources() release MVKCommandEncodingPool::_lock
+	 *      before calling destroyBuffer() / freeMemory() / destroyImage()
 	 */
 	std::mutex _rezLock;
 	std::mutex _sem4Lock;

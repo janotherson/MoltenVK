@@ -1162,8 +1162,9 @@ void MVKCommandEncoder::setVertexBytes(id<MTLRenderCommandEncoder> mtlEncoder,
 	if (mtlFeats.dynamicMTLBufferSize && length <= mtlFeats.dynamicMTLBufferSize) {
 		getMtlGraphics().bindVertexBytes(mtlEncoder, bytes, length, mtlBuffIndex);
 	} else {
-		const MVKMTLBufferAllocation* mtlBuffAlloc = copyToTempMTLBufferAllocation(bytes, length);
-		getMtlGraphics().bindVertexBuffer(mtlEncoder, mtlBuffAlloc->_mtlBuffer, mtlBuffAlloc->_offset, mtlBuffIndex);
+		if (const MVKMTLBufferAllocation* mtlBuffAlloc = copyToTempMTLBufferAllocation(bytes, length)) {
+			getMtlGraphics().bindVertexBuffer(mtlEncoder, mtlBuffAlloc->_mtlBuffer, mtlBuffAlloc->_offset, mtlBuffIndex);
+		}
 	}
 }
 
@@ -1175,8 +1176,9 @@ void MVKCommandEncoder::setFragmentBytes(id<MTLRenderCommandEncoder> mtlEncoder,
 	if (mtlFeats.dynamicMTLBufferSize && length <= mtlFeats.dynamicMTLBufferSize) {
 		getMtlGraphics().bindFragmentBytes(mtlEncoder, bytes, length, mtlBuffIndex);
 	} else {
-		const MVKMTLBufferAllocation* mtlBuffAlloc = copyToTempMTLBufferAllocation(bytes, length);
-		getMtlGraphics().bindFragmentBuffer(mtlEncoder, mtlBuffAlloc->_mtlBuffer, mtlBuffAlloc->_offset, mtlBuffIndex);
+		if (const MVKMTLBufferAllocation* mtlBuffAlloc = copyToTempMTLBufferAllocation(bytes, length)) {
+			getMtlGraphics().bindFragmentBuffer(mtlEncoder, mtlBuffAlloc->_mtlBuffer, mtlBuffAlloc->_offset, mtlBuffIndex);
+		}
 	}
 }
 
@@ -1188,8 +1190,9 @@ void MVKCommandEncoder::setComputeBytes(id<MTLComputeCommandEncoder> mtlEncoder,
 	if (mtlFeats.dynamicMTLBufferSize && length <= mtlFeats.dynamicMTLBufferSize) {
 		getMtlCompute().bindBytes(mtlEncoder, bytes, length, mtlBuffIndex);
 	} else {
-		const MVKMTLBufferAllocation* mtlBuffAlloc = copyToTempMTLBufferAllocation(bytes, length);
-		getMtlCompute().bindBuffer(mtlEncoder, mtlBuffAlloc->_mtlBuffer, mtlBuffAlloc->_offset, mtlBuffIndex);
+		if (const MVKMTLBufferAllocation* mtlBuffAlloc = copyToTempMTLBufferAllocation(bytes, length)) {
+			getMtlCompute().bindBuffer(mtlEncoder, mtlBuffAlloc->_mtlBuffer, mtlBuffAlloc->_offset, mtlBuffIndex);
+		}
 	}
 }
 
@@ -1209,10 +1212,11 @@ MVKCommandEncodingPool* MVKCommandEncoder::getCommandEncodingPool() {
 // Copies the specified bytes into a temporary allocation within a pooled MTLBuffer, and returns the MTLBuffer allocation.
 const MVKMTLBufferAllocation* MVKCommandEncoder::copyToTempMTLBufferAllocation(const void* bytes, NSUInteger length, bool isDedicated) {
 	const MVKMTLBufferAllocation* mtlBuffAlloc = getTempMTLBuffer(length, false, isDedicated);
-    void* pBuffData = mtlBuffAlloc->getContents();
-    memcpy(pBuffData, bytes, length);
-
-    return mtlBuffAlloc;
+	if (mtlBuffAlloc) {
+		void* pBuffData = mtlBuffAlloc->getContents();
+		memcpy(pBuffData, bytes, length);
+	}
+	return mtlBuffAlloc;
 }
 
 
@@ -1367,7 +1371,6 @@ void MVKCommandEncoder::finishTempMTLBuffers() {
     }
 
     auto* pAllocations = new MVKSmallVector<MVKMTLBufferAllocation*, 64>(std::move(_tempMTLBufferAllocations));
-    _tempMTLBufferAllocations.clear();
 
     MVKCommandPool* cmdPool = _cmdBuffer->getCommandPool();
     cmdPool->_trimCount.fetch_add(1, std::memory_order_relaxed);
@@ -1422,7 +1425,7 @@ MVKCommandEncoder::MVKCommandEncoder(MVKCommandBuffer* cmdBuffer, MVKPrefillMeta
 }
 
 MVKCommandEncoder::~MVKCommandEncoder() {
-	clearTempMTLBuffers();
+	finishTempMTLBuffers();
 	[_mtlRenderEncoder release];
 	[_mtlComputeEncoder release];
 	[_mtlBlitEncoder release];

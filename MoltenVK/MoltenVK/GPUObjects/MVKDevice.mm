@@ -3470,19 +3470,18 @@ MVK_PUBLIC_SYMBOL MTLStorageMode MVKPhysicalDevice::getMTLStorageModeFromVkMemor
 }
 
 uint64_t MVKPhysicalDevice::getVRAMSize() {
-	uint64_t vramSize;
 	if (_hasUnifiedMemory) {
-		vramSize = mvkGetSystemMemorySize();
+		uint64_t vramSize = mvkGetSystemMemorySize();
+		uint64_t maxVRAM = (uint64_t)getMVKConfig().maxVRAMSizeMB * MEBI;
+		if (maxVRAM > 0 && vramSize > maxVRAM) {
+			vramSize = maxVRAM;
+		}
+		return vramSize;
 	} else {
 		// There's actually no way to query the total physical VRAM on the device in Metal.
 		// Just default to using the recommended max working set size (i.e. the budget).
-		vramSize = getRecommendedMaxWorkingSetSize();
+		return getRecommendedMaxWorkingSetSize();
 	}
-	uint64_t maxVRAM = (uint64_t)_mvkInstance->getMVKConfig().maxVRAMSizeMB * MEBI;
-	if (maxVRAM > 0 && vramSize > maxVRAM) {
-		vramSize = maxVRAM;
-	}
-	return vramSize;
 }
 
 // If possible, retrieve from the MTLDevice, otherwise from available memory size, or a fixed conservative estimate.
@@ -3494,7 +3493,7 @@ uint64_t MVKPhysicalDevice::getRecommendedMaxWorkingSetSize() {
 		uint64_t freeMem = mvkGetAvailableMemorySize();
 		workingSetSize = freeMem ? freeMem : 256 * MEBI;
 	}
-	uint64_t maxVRAM = (uint64_t)_mvkInstance->getMVKConfig().maxVRAMSizeMB * MEBI;
+	uint64_t maxVRAM = (uint64_t)getMVKConfig().maxVRAMSizeMB * MEBI;
 	if (maxVRAM > 0 && workingSetSize > maxVRAM) {
 		workingSetSize = maxVRAM;
 	}

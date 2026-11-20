@@ -125,15 +125,16 @@ protected:
         uint32_t totalSlots = 0;
         uint32_t activeCount = 0;
         uint32_t nextUnallocatedSlot = 0;
-        MVKSmallVector<MVKMTLBufferAllocation*, 64> freeSlices;
+        bool isVolatile = false;
+        MVKSmallVector<MVKMTLBufferAllocation*, 8> freeSlices;
     };
 
     std::mutex _lock;
     NSUInteger _allocationLength;
     NSUInteger _mtlBufferLength;
     MTLStorageMode _mtlStorageMode;
-    MVKSmallVector<MTLBufferPage, 16> _mtlBuffers;
-    MVKSmallVector<MVKMTLBufferAllocation*, 64> _freeAllocationHandles;
+    MVKSmallVector<MTLBufferPage, 4> _mtlBuffers;
+    MVKSmallVector<MVKMTLBufferAllocation*, 16> _freeAllocationHandles;
     bool _isThreadSafe;
     bool _dirtyFlag = false;
 };
