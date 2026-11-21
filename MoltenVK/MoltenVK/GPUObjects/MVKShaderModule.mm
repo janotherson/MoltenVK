@@ -98,13 +98,22 @@ MVKMTLFunction MVKShaderLibrary::getMTLFunction(const VkSpecializationInfo* pSpe
 			usesMacroVariant = true;
 			// Sort the specialization list before it is used as a key to index the variants
 			std::sort(spec_list.begin(), spec_list.end());
+			lock_guard<mutex> lock(_compileLock);
 			auto entry = _specializationVariants.find(spec_list);
 			if (entry != _specializationVariants.end()) {
 				lib = entry->second->_mtlLibrary;
 			} else {
 				MVKShaderLibrary *new_mvklib = new MVKShaderLibrary(_owner, _shaderConversionResultInfo, _compressedMSL, &spec_list);
-				_specializationVariants[spec_list] = new_mvklib;
-				lib = new_mvklib->_mtlLibrary;
+				if (new_mvklib->_mtlLibrary) {
+					_specializationVariants[spec_list] = new_mvklib;
+					lib = new_mvklib->_mtlLibrary;
+				} else {
+					delete new_mvklib;
+					if (_compilePending.load(std::memory_order_relaxed)) {
+						_compileFailed.store(true, std::memory_order_release);
+						_compilePending.store(false, std::memory_order_release);
+					}
+				}
 			}
 		}
 	}
@@ -295,8 +304,7 @@ MVKShaderLibrary::MVKShaderLibrary(MVKVulkanAPIDeviceObject* owner,
 MVKShaderLibrary::MVKShaderLibrary(const MVKShaderLibrary& other) :
 	MVKBaseDeviceObject(other._device),
 	_owner(other._owner),
-	_maySpecializeWithMacro(other._maySpecializeWithMacro),
-	_specializationVariants(other._specializationVariants) {
+	_maySpecializeWithMacro(other._maySpecializeWithMacro) {
 
 	lock_guard<mutex> lock(other._compileLock);
 	_compilePending.store(other._compilePending.load(std::memory_order_acquire), std::memory_order_relaxed);
@@ -315,6 +323,11 @@ MVKShaderLibrary& MVKShaderLibrary::operator=(const MVKShaderLibrary& other) {
 		[_mtlLibrary release];
 		_mtlLibrary = [other._mtlLibrary retain];
 	}
+	for (auto& item : _specializationVariants) {
+		delete item.second;
+	}
+	_specializationVariants.clear();
+	_maySpecializeWithMacro = other._maySpecializeWithMacro;
 	_owner = other._owner;
 	_shaderConversionResultInfo = other._shaderConversionResultInfo;
 	_compressedMSL = other._compressedMSL;

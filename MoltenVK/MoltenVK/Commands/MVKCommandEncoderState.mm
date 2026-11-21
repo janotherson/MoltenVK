@@ -1863,9 +1863,10 @@ void MVKCommandEncoderState::bindDescriptorSets(
 	// a set bound again with the same data needs no rebinding
 	MVKStaticBitSet<kMVKMaxDescriptorSetCount> changedSets;
 	bool changedData = false;
+	bool trackResourceUse = !layout->getMetalFeatures().residencySets;
 	if (MVKVulkanCommonEncoderState* vk = getVkEncoderState(bindPoint)) {
 		for (uint32_t i = 0; i < setCount; i++) {
-			if (vk->_descriptorSets[firstSet + i] != sets[i])
+			if (trackResourceUse || vk->_descriptorSets[firstSet + i] != sets[i])
 				changedSets.set(firstSet + i);
 		}
 	}

@@ -139,6 +139,7 @@ public:
 	~MVKShaderLibrary() override;
 
 protected:
+	friend MVKPipelineCache;
 	friend MVKShaderCacheIterator;
 	friend MVKShaderLibraryCache;
 	friend MVKShaderModule;
