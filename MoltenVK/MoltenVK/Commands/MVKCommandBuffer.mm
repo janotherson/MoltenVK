@@ -809,10 +809,10 @@ void MVKCommandEncoder::configureMTLRenderPassDescriptor(MTLRenderPassDescriptor
 	if (_cmdBuffer->_needsVisibilityResultMTLBuffer) {
 		if (!_pEncodingContext->visibilityResultBuffer.buffer()) {
 			_pEncodingContext->visibilityResultBuffer = _device->getVisibilityBuffer();
+			// Track the starting visibility offset when the buffer is first acquired so wrap detection compares
+			// against the correct baseline even when the buffer was already partially consumed.
+			_pEncodingContext->firstVisibilityResultOffsetInRenderPass = _pEncodingContext->visibilityResultBuffer.offset();
 		}
-		// Track the starting visibility offset for this Metal render pass so wrap detection compares
-		// against the correct baseline even when the buffer was already partially consumed.
-		_pEncodingContext->firstVisibilityResultOffsetInRenderPass = _pEncodingContext->visibilityResultBuffer.offset();
 		mtlRPDesc.visibilityResultBuffer = _pEncodingContext->visibilityResultBuffer.buffer();
 	}
 	_hasMTLRenderEncoderVisibilityResultBuffer = (mtlRPDesc.visibilityResultBuffer != nil);

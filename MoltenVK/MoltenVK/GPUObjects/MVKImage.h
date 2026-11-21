@@ -508,6 +508,7 @@ protected:
 
 	id<CAMetalDrawable> _mtlDrawable = nil;
 	id<MTLTexture> _residentDrawableTexture = nil;
+	MVKSmallVector<id<MTLTexture>, 2> _presentedDrawableTextures;
 	id<MTLTexture> _mtlTextureHeadless = nil;
 	MVKSwapchainImageAvailability _availability;
 	MVKSmallVector<MVKSwapchainSignaler, 1> _availabilitySignalers;

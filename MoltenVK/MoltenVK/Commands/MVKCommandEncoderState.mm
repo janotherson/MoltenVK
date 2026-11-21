@@ -365,7 +365,9 @@ static bool bindDescriptorSets(MVKImplicitBufferData& target,
 		uint32_t varCount = set->variableDescriptorCount;
 		if (uint32_t count = setLayout->dynamicOffsetCount(varCount)) {
 			if (stride.dynamicOffsetBufferIndex) {
+				size_t prevSize = target.dynamicOffsets.size();
 				mvkEnsureSize(target.dynamicOffsets, offsets.dynamicOffsetBufferIndex + stride.dynamicOffsetBufferIndex);
+				changed |= (target.dynamicOffsets.size() != prevSize);
 				uint32_t* write = &target.dynamicOffsets[offsets.dynamicOffsetBufferIndex];
 				for (const auto& binding : setLayout->bindings()) {
 					if (!binding.perDescriptorResourceCount.dynamicOffset)
@@ -407,8 +409,7 @@ static void bindImmediateData(id<MTLCommandEncoder> encoder,
                               const MVKResourceBinder& RESTRICT binder) {
 	if (size < 4096) {
 		binder.setBytes(encoder, data, size, idx);
-	} else {
-		const MVKMTLBufferAllocation* alloc = mvkEncoder.copyToTempMTLBufferAllocation(data, size);
+	} else if (const MVKMTLBufferAllocation* alloc = mvkEncoder.copyToTempMTLBufferAllocation(data, size)) {
 		binder.setBuffer(encoder, alloc->_mtlBuffer, alloc->_offset, idx);
 	}
 }
@@ -1830,6 +1831,7 @@ void MVKCommandEncoderState::bindGraphicsPipeline(MVKGraphicsPipeline* pipeline)
 			mvkEnsureSize(_vkShared._pushConstants, layout->getPushConstantsLength());
 			invalidateImplicitBuffer(*this, VK_PIPELINE_BIND_POINT_GRAPHICS, MVKNonVolatileImplicitBuffer::PushConstant);
 		}
+		applyToActiveMTLState(VK_PIPELINE_BIND_POINT_GRAPHICS, [](auto& mtl){ invalidateDescriptorSetImplicitBuffers(mtl); });
 		_vkGraphics.setLayout(layout);
 	}
 }
@@ -1842,6 +1844,7 @@ void MVKCommandEncoderState::bindComputePipeline(MVKComputePipeline* pipeline) {
 			mvkEnsureSize(_vkShared._pushConstants, layout->getPushConstantsLength());
 			invalidateImplicitBuffer(*this, VK_PIPELINE_BIND_POINT_COMPUTE, MVKNonVolatileImplicitBuffer::PushConstant);
 		}
+		applyToActiveMTLState(VK_PIPELINE_BIND_POINT_COMPUTE, [](auto& mtl){ invalidateDescriptorSetImplicitBuffers(mtl); });
 		_vkCompute.setLayout(layout);
 	}
 }
@@ -1865,15 +1868,16 @@ void MVKCommandEncoderState::bindDescriptorSets(
 	bool changedData = false;
 	bool trackResourceUse = !layout->getMetalFeatures().residencySets;
 	if (MVKVulkanCommonEncoderState* vk = getVkEncoderState(bindPoint)) {
+		if (vk->_layout != layout) { changedData = true; }
 		for (uint32_t i = 0; i < setCount; i++) {
 			if (trackResourceUse || vk->_descriptorSets[firstSet + i] != sets[i])
 				changedSets.set(firstSet + i);
 		}
 	}
 	if (bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
-		changedData = _vkGraphics.bindDescriptorSets(layout, firstSet, setCount, sets, dynamicOffsetCount, dynamicOffsets);
+		changedData |= _vkGraphics.bindDescriptorSets(layout, firstSet, setCount, sets, dynamicOffsetCount, dynamicOffsets);
 	} else if (bindPoint == VK_PIPELINE_BIND_POINT_COMPUTE) {
-		changedData = _vkCompute.bindDescriptorSets(layout, firstSet, setCount, sets, dynamicOffsetCount, dynamicOffsets);
+		changedData |= _vkCompute.bindDescriptorSets(layout, firstSet, setCount, sets, dynamicOffsetCount, dynamicOffsets);
 	}
 	applyToActiveMTLState(bindPoint, [changedSets, changedData](auto& mtl){
 		if (changedData)

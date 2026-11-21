@@ -187,6 +187,7 @@ void MVKQueryPool::encodeCopyResults(MVKCommandEncoder* cmdEncoder,
 		id<MTLComputePipelineState> mtlCopyResultsState = cmdEncoder->getCommandEncodingPool()->getCmdCopyQueryPoolResultsMTLComputePipelineState();
 		MVKMetalComputeCommandEncoderState& state = cmdEncoder->getMtlCompute();
 		id<MTLComputeCommandEncoder> mtlComputeCmdEnc = encodeComputeCopyResults(cmdEncoder, firstQuery, queryCount, 0);
+		if ( !mtlComputeCmdEnc ) { return; }
 		state.bindPipeline(mtlComputeCmdEnc, mtlCopyResultsState);
 		state.bindBuffer(mtlComputeCmdEnc, destBuffer->getMTLBuffer(), destBuffer->getMTLBufferOffset() + destOffset, 1);
 		state.bindStructBytes(mtlComputeCmdEnc, &stride,     2);
@@ -216,9 +217,10 @@ void MVKQueryPool::encodeDirectCopyResults(MVKCommandEncoder* cmdEncoder,
 									 VkDeviceSize destOffset,
 									 VkDeviceSize stride) {
 
-	id<MTLBlitCommandEncoder> mtlBlitCmdEnc = cmdEncoder->getMTLBlitEncoder(kMVKCommandUseCopyQueryPoolResults);
 	NSUInteger srcOffset;
 	id<MTLBuffer> srcBuff = getResultBuffer(cmdEncoder, firstQuery, queryCount, srcOffset);
+	if ( !srcBuff ) { return; }
+	id<MTLBlitCommandEncoder> mtlBlitCmdEnc = cmdEncoder->getMTLBlitEncoder(kMVKCommandUseCopyQueryPoolResults);
 	[mtlBlitCmdEnc copyFromBuffer: srcBuff
 					 sourceOffset: srcOffset
 						 toBuffer: destBuffer->getMTLBuffer()
@@ -392,6 +394,7 @@ void MVKTimestampQueryPool::encodeDirectCopyResults(MVKCommandEncoder* cmdEncode
 
 id<MTLBuffer> MVKTimestampQueryPool::getResultBuffer(MVKCommandEncoder* cmdEncoder, uint32_t firstQuery, uint32_t queryCount, NSUInteger& offset) {
 	const MVKMTLBufferAllocation* tempBuff = cmdEncoder->getTempMTLBuffer(queryCount * _queryElementCount * sizeof(uint64_t));
+	if ( !tempBuff ) { return nil; }
 	void* pBuffData = tempBuff->getContents();
 	size_t size = queryCount * _queryElementCount * sizeof(uint64_t);
 	memcpy(pBuffData, &_timestamps[firstQuery], size);
@@ -404,6 +407,7 @@ id<MTLComputeCommandEncoder> MVKTimestampQueryPool::encodeComputeCopyResults(MVK
 		// We first need to resolve from the MTLCounterSampleBuffer into a temp buffer using a
 		// MTLBlitCommandEncoder, before creating the compute encoder and set that temp buffer into it.
 		const MVKMTLBufferAllocation* tempBuff = cmdEncoder->getTempMTLBuffer(queryCount * _queryElementCount * sizeof(uint64_t));
+		if ( !tempBuff ) { return nil; }
 		id<MTLBlitCommandEncoder> mtlBlitCmdEnc = cmdEncoder->getMTLBlitEncoder(kMVKCommandUseCopyQueryPoolResults);
 		[mtlBlitCmdEnc resolveCounters: _mtlCounterBuffer
 							   inRange: NSMakeRange(firstQuery,  queryCount)

@@ -218,6 +218,9 @@ protected:
 	MVKShaderLibrary* addShaderLibrary(const mvk::SPIRVToMSLConversionConfiguration* pShaderConfig,
 									   const mvk::SPIRVToMSLConversionResultInfo& resultInfo,
 									   const MVKCompressor<std::string> compressedMSL);
+	void replaceShaderLibrary(const mvk::SPIRVToMSLConversionConfiguration* pShaderConfig,
+							  MVKShaderLibrary* retired,
+							  MVKShaderLibrary* shLib);
 	void merge(MVKShaderLibraryCache* other);
 
 	MVKVulkanAPIDeviceObject* _owner;

@@ -362,6 +362,19 @@ MVKShaderLibrary::~MVKShaderLibrary() {
 #pragma mark -
 #pragma mark MVKShaderLibraryCache
 
+// Returns the configuration to keep for a cached conversion. A cached configuration is only read by
+// matches() and alignWith(), which ignore every resource binding not used by the converted stage, so
+// only those are kept. A pipeline layout gives one resource binding per binding and per shader stage.
+static SPIRVToMSLConversionConfiguration getCachedShaderConfig(const SPIRVToMSLConversionConfiguration* pShaderConfig) {
+	SPIRVToMSLConversionConfiguration config = *pShaderConfig;
+	vector<MSLResourceBinding> usedBindings;
+	for (auto& rb : config.resourceBindings) {
+		if (rb.resourceBinding.stage == config.options.entryPointStage && rb.outIsUsedByShader) { usedBindings.push_back(rb); }
+	}
+	config.resourceBindings = std::move(usedBindings);
+	return config;
+}
+
 MVKShaderLibrary* MVKShaderLibraryCache::getShaderLibrary(SPIRVToMSLConversionConfiguration* pShaderConfig,
 														  MVKShaderModule* shaderModule, MVKPipeline* pipeline,
 														  bool* pWasAdded, VkPipelineCreationFeedback* pShaderFeedback,
@@ -377,10 +390,7 @@ MVKShaderLibrary* MVKShaderLibraryCache::getShaderLibrary(SPIRVToMSLConversionCo
 		if (shaderModule->convert(pShaderConfig, conversionResult)) {
 			if (retired) {
 				shLib = new MVKShaderLibrary(_owner, conversionResult);
-				for (auto& slPair : _shaderLibraries) {
-					if (slPair.second == retired) { slPair.second = shLib; break; }
-				}
-				_retiredLibraries.push_back(retired);
+				replaceShaderLibrary(pShaderConfig, retired, shLib);
 			} else {
 				shLib = addShaderLibrary(pShaderConfig, conversionResult);
 			}
@@ -414,17 +424,17 @@ MVKShaderLibrary* MVKShaderLibraryCache::findShaderLibrary(SPIRVToMSLConversionC
 	return nullptr;
 }
 
-// Returns the configuration to keep for a cached conversion. A cached configuration is only read by
-// matches() and alignWith(), which ignore every resource binding not used by the converted stage, so
-// only those are kept. A pipeline layout gives one resource binding per binding and per shader stage.
-static SPIRVToMSLConversionConfiguration getCachedShaderConfig(const SPIRVToMSLConversionConfiguration* pShaderConfig) {
-	SPIRVToMSLConversionConfiguration config = *pShaderConfig;
-	vector<MSLResourceBinding> usedBindings;
-	for (auto& rb : config.resourceBindings) {
-		if (rb.resourceBinding.stage == config.options.entryPointStage && rb.outIsUsedByShader) { usedBindings.push_back(rb); }
+void MVKShaderLibraryCache::replaceShaderLibrary(const SPIRVToMSLConversionConfiguration* pShaderConfig,
+												 MVKShaderLibrary* retired,
+												 MVKShaderLibrary* shLib) {
+	for (auto& slPair : _shaderLibraries) {
+		if (slPair.second == retired) {
+			slPair.first = getCachedShaderConfig(pShaderConfig);
+			slPair.second = shLib;
+			break;
+		}
 	}
-	config.resourceBindings = std::move(usedBindings);
-	return config;
+	_retiredLibraries.push_back(retired);
 }
 
 // Adds and returns a new shader library configured from the specified conversion configuration.

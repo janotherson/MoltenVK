@@ -1687,14 +1687,35 @@ VkResult MVKPresentableSwapchainImage::presentCAMetalDrawable(id<MTLCommandBuffe
 	// callbacks can occasionally stall.
 	retain();
 	[mtlDrwbl retain];
+	id<MTLTexture> mtlDrwblTex = mtlCmdBuff ? [mtlDrwbl.texture retain] : nil;
+	if (mtlDrwblTex) {
+		lock_guard<mutex> lock(_detachmentLock);
+		if (_device) {
+			_device->makeDrawableTextureResident(mtlDrwblTex);
+			_presentedDrawableTextures.push_back(mtlDrwblTex);
+		}
+	}
 	auto* fence = presentInfo.fence;
 	if (fence) { fence->retain(); }
 	[mtlCmdBuff addCompletedHandler: ^(id<MTLCommandBuffer> mcb) {
 		signal(fence);
 		if (fence) { fence->release(); }
+		{
+			lock_guard<mutex> lock(_detachmentLock);
+			if (mtlDrwblTex && _device) {
+				for (auto it = _presentedDrawableTextures.begin(); it != _presentedDrawableTextures.end(); ++it) {
+					if (*it == mtlDrwblTex) {
+						_presentedDrawableTextures.erase(it);
+						_device->removeDrawableTextureResidency(mtlDrwblTex);
+						break;
+					}
+				}
+			}
+			if (_swapchain) { _swapchain->notifyPresentComplete(presentInfo); }
+		}
+		[mtlDrwblTex release];
 		[mtlDrwbl release];
 		release();
-		if (_swapchain) { _swapchain->notifyPresentComplete(presentInfo); }
 	}];
 
 	signal(signaler.semaphore, signaler.semaphoreSignalToken, mtlCmdBuff);
@@ -1828,6 +1849,15 @@ MVKPresentableSwapchainImage::MVKPresentableSwapchainImage(MVKDevice* device,
 
 void MVKPresentableSwapchainImage::destroy() {
 	releaseMetalDrawable();
+	{
+		lock_guard<mutex> lock(_detachmentLock);
+		if (_device) {
+			for (id<MTLTexture> tex : _presentedDrawableTextures) {
+				_device->removeDrawableTextureResidency(tex);
+			}
+		}
+		_presentedDrawableTextures.clear();
+	}
 	[_mtlTextureHeadless release];
 	_mtlTextureHeadless = nil;
 	MVKSwapchainImage::destroy();
@@ -1913,8 +1943,9 @@ id<MTLTexture> MVKImageViewPlane::getMTLTexture() {
             }
 
             MVKAssert(baseMTLTexture, "Attempting to create an MTLTexture view from a nil base texture.");
-            initializeMTLTexture(newMTLTextureFromBaseMTLTexture(baseMTLTexture)); // retained
-            if (_mtlTexture) { _mtlTextureBase = [baseMTLTexture retain]; }
+            id<MTLTexture> mtlTex = newMTLTextureFromBaseMTLTexture(baseMTLTexture); // retained
+            if (mtlTex) { _mtlTextureBase = [baseMTLTexture retain]; }
+            initializeMTLTexture(mtlTex);
         }
         return _mtlTexture;
     } else {

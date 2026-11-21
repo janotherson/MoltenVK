@@ -2569,10 +2569,7 @@ MVKShaderLibrary* MVKPipelineCache::getShaderLibrary(SPIRVToMSLConversionConfigu
 	{
 		lock_guard<mutex> lock(_shaderCacheLock);
 		if (retired) {
-			for (auto& slPair : slCache->_shaderLibraries) {
-				if (slPair.second == retired) { slPair.second = shLib; break; }
-			}
-			slCache->_retiredLibraries.push_back(retired);
+			slCache->replaceShaderLibrary(pContext, retired, shLib);
 		} else {
 			slCache->addShaderLibrary(pContext, shLib);
 		}
